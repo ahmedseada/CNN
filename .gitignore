@@ -18,3 +18,7 @@ coverage*.xml
 # OS
 .DS_Store
 Thumbs.db
+
+# Sample data and trained models
+samples/**/data/
+*.ikm
