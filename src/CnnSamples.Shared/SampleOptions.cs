@@ -1,11 +1,12 @@
 namespace CnnSamples.Shared;
 
 /// <summary>
-/// The command line of a sample: <c>train</c> (the default), <c>predict IMAGE</c> or <c>export</c>, and their options.
+/// The command line of a sample: <c>train</c> (the default), a command that takes an image (<c>predict IMAGE</c>,
+/// <c>ocr IMAGE</c>), or another command (<c>export</c>, <c>demo</c>), and their options.
 /// </summary>
 public sealed record SampleOptions(
     string Command, string? ImagePath, int Epochs, int Patience, int BatchSize, int? TrainSamples, string ModelPath,
-    string DataFolder, int ExportCount, string ExportFolder)
+    string DataFolder, int ExportCount, string ExportFolder, string? Text = null)
 {
     /// <summary>Parses <paramref name="args"/> over <paramref name="defaults"/>.</summary>
     /// <exception cref="ArgumentException">An unknown option, or an option without its value.</exception>
@@ -15,7 +16,7 @@ public sealed record SampleOptions(
         int i = 0;
         if (args.Length > 0 && !args[0].StartsWith("--"))
             o = o with { Command = args[i++].ToLowerInvariant() };
-        if (o.Command == "predict" && i < args.Length && !args[i].StartsWith("--"))
+        if (o.Command is "predict" or "ocr" && i < args.Length && !args[i].StartsWith("--"))
             o = o with { ImagePath = args[i++] };
 
         for (; i < args.Length; i++)
@@ -37,6 +38,7 @@ public sealed record SampleOptions(
                 "--data" => o with { DataFolder = Value() },
                 "--count" => o with { ExportCount = Number() },
                 "--out" => o with { ExportFolder = Value() },
+                "--text" => o with { Text = Value() },
                 _ => throw new ArgumentException($"Unknown option {args[i]}."),
             };
         }

@@ -24,3 +24,4 @@ samples/**/data/
 samples/**/test-digits/
 samples/**/test-letters/
 *.ikm
+samples/**/page.pgm

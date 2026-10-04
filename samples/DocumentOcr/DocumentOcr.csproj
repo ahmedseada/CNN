@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>DocumentOcr</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Idrak" Version="0.2.0" />
+    <ProjectReference Include="..\..\src\CnnSamples.Shared\CnnSamples.Shared.csproj" />
+  </ItemGroup>
+
+</Project>
