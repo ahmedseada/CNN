@@ -192,15 +192,9 @@ void Ocr(SampleOptions o)
             text.Append(separator);
         }
 
-        // A word of mostly letters reads every character as its likeliest letter (1 -> I, 5 -> S, 0 -> O), a word of
-        // mostly digits as its likeliest digit; a word that is half and half keeps what the model said.
-        int digits = word.Count(i => char.IsDigit(answers[i].Class[0]));
-        Func<string, bool>? keep = digits * 2 < word.Count ? c => char.IsLetter(c[0]) : digits * 2 > word.Count ? c => char.IsDigit(c[0]) : null;
         foreach (int i in word)
-        {
             raw.Append(answers[i].Class);
-            text.Append(keep is null ? answers[i].Class : answers[i].Scores.First(s => keep(s.Class)).Class);
-        }
+        text.Append(InContext([.. word.Select(i => answers[i])]));
     }
 
     if (show)
@@ -214,6 +208,27 @@ void Ocr(SampleOptions o)
         Console.WriteLine();
     }
     return (raw.ToString(), text.ToString());
+}
+
+// A word read with its context. In a word of mostly letters, a digit becomes the letter it looks like (1 -> I, 0 -> O,
+// 5 -> S...), or else the model's likeliest letter; in a word of mostly digits, the other way round. A half-and-half
+// word keeps what the model said. Then the word takes one case: most of its letters' (EMNIST Balanced has separate
+// classes for a b d e f g h n q r t, so "tHE" and "fOX" happen).
+static string InContext(IReadOnlyList<ClassPrediction> word)
+{
+    int digits = word.Count(a => char.IsDigit(a.Class[0]));
+    var chars = word.Select(a => a.Class[0]).ToArray();
+    for (int i = 0; i < chars.Length; i++)
+    {
+        if (digits * 2 < word.Count && char.IsDigit(chars[i]))
+            chars[i] = LooksLikeLetter.TryGetValue(chars[i], out char letter) ? letter : word[i].Scores.First(s => char.IsLetter(s.Class[0])).Class[0];
+        else if (digits * 2 > word.Count && char.IsLetter(chars[i]))
+            chars[i] = LooksLikeDigit.TryGetValue(chars[i], out char digit) ? digit : word[i].Scores.First(s => char.IsDigit(s.Class[0])).Class[0];
+    }
+
+    var letters = chars.Where(char.IsLetter).ToArray();
+    bool upper = letters.Count(char.IsUpper) * 2 >= letters.Length;
+    return new string([.. chars.Select(c => upper ? char.ToUpperInvariant(c) : char.ToLowerInvariant(c))]);
 }
 
 // The glyphs' indices grouped into words: a new word at a space or a new line.
@@ -245,4 +260,19 @@ static int Levenshtein(string a, string b)
         previous = current;
     }
     return previous[b.Length];
+}
+
+// Characters that handwriting makes hard to tell apart, for words whose kind (letters or digits) is known.
+internal static partial class Program
+{
+    private static readonly Dictionary<char, char> LooksLikeLetter = new()
+    {
+        ['0'] = 'O', ['1'] = 'I', ['2'] = 'Z', ['5'] = 'S', ['6'] = 'G', ['8'] = 'B',
+    };
+
+    private static readonly Dictionary<char, char> LooksLikeDigit = new()
+    {
+        ['O'] = '0', ['D'] = '0', ['I'] = '1', ['L'] = '1', ['Z'] = '2', ['S'] = '5', ['G'] = '6', ['b'] = '6',
+        ['B'] = '8', ['g'] = '9', ['q'] = '9',
+    };
 }

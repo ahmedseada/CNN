@@ -16,8 +16,10 @@ How it works:
    - marks a space where the gap is wider than 0.4 of the line height;
    - centres each character in a square and scales it to 28 x 28, the way EMNIST built its images.
 3. **Recognition.** All characters of the page go through the model in one batch.
-4. **Word context.** In a word that is mostly letters, each character becomes its most likely letter (`1` → `I`,
-   `5` → `S`, `0` → `O`). In a word that is mostly digits, each character becomes its most likely digit.
+4. **Word context.** In a word that is mostly letters, a digit becomes the letter it looks like (`1` → `I`, `0` → `O`,
+   `5` → `S`, `2` → `Z`, `8` → `B`, `6` → `G`), or the model's most likely letter if it has no look-alike. In a word that
+   is mostly digits, it works the other way round (`O`/`D` → `0`, `I`/`L` → `1`, `S` → `5`...). Each word then takes the
+   case of most of its letters, so `tHE` becomes `THE`.
 
 The reader expects separate characters on clean lines: printed-style handwriting, form fields, the `demo` pages. It
 can't read joined-up (cursive) handwriting; that needs a model that reads whole words.
@@ -110,7 +112,12 @@ Character error rate, character by character: 9.0 % (7 edits over 78 characters)
 Character error rate, with words: 3.8 % (3 edits over 78 characters)
 ```
 
-That output is from a small test model, not one trained on the full data set. Your numbers will differ.
+That output is from a small test model, not one trained on the full data set. Your numbers will differ. The error
+rate ignores case, because EMNIST Balanced shares one class between `c` and `C`, `o` and `O`, and so on.
+
+A measured run: trained on all of EMNIST Balanced on an NVIDIA RTX 5070 Ti, 10 epochs in about 2.6 minutes, 89.1% test
+accuracy. Published results for this split are around 88-91%. Most of its mistakes are pairs that handwriting makes
+ambiguous: `F`/`f`, `L`/`1`, `O`/`0`, `I`/`1`, `q`/`9`.
 
 Options: `--text "FIRST LINE\nSECOND LINE"` for your own text (digits, letters and spaces; `\n` starts a new line),
 and `--out FILE` for where to write the page.
