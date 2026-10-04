@@ -11,6 +11,7 @@ local .NET tool.
 | [`samples/DigitsCnn`](samples/DigitsCnn/README.md) | Trains a CNN on MNIST and recognises handwritten digits 0-9 |
 | [`samples/LettersCnn`](samples/LettersCnn/README.md) | Trains a deeper CNN (batch norm, AdamW, cosine schedule) on EMNIST Letters and recognises handwritten letters A-Z |
 | [`samples/DocumentOcr`](samples/DocumentOcr/README.md) | Reads the text of a page of handwritten characters: a CNN on EMNIST Balanced (digits, letters) plus a page reader that finds lines and characters |
+| [`samples/MultiLanguageOcr`](samples/MultiLanguageOcr/README.md) | Reads pages of handwritten characters in English and Arabic: one CNN on EMNIST, AHCD and MADBase (85 characters), one script per line, Arabic read right to left |
 
 Each sample has its own `README.md` with the steps to download its data and run it. Code that all the samples use
 (IDX reading, console reports, model packages) lives in [`src/CnnSamples.Shared`](src/CnnSamples.Shared/README.md).
@@ -58,4 +59,4 @@ To install the CLI for every folder instead of this repository only, run `dotnet
 | `tests/`              | Tests (empty for now)                                       |
 
 Downloaded datasets (`samples/*/data/`), exported test images (`samples/*/test-digits/`, `samples/*/test-letters/`),
-demo pages (`page.pgm`) and trained models (`*.ikm`) are git-ignored.
+demo pages (`page.pgm`, `page.txt`) and trained models (`*.ikm`) are git-ignored.

@@ -1,0 +1,162 @@
+# MultiLanguageOcr
+
+A .NET 10 console app that reads pages of handwritten characters in **English and Arabic**. It uses
+[Idrak](https://www.nuget.org/packages/Idrak) 0.2.1 and its fluent API. It builds on [DocumentOcr](../DocumentOcr/README.md),
+which reads English only.
+
+How it works:
+
+1. **One model, 85 characters, two scripts.** The network trains on three data sets at once:
+
+   | Script | Data set | Characters |
+   |--------|----------|------------|
+   | Latin | EMNIST Balanced | 47: digits `0-9`, capitals `A-Z`, and `a b d e f g h n q r t` |
+   | Arabic | AHCD (Arabic Handwritten Characters Dataset) | 28 letters: `ا ب ت ث ج ح خ د ذ ر ز س ش ص ض ط ظ ع غ ف ق ك ل م ن ه و ي` |
+   | Arabic | MADBase / AHDD (Arabic Handwritten Digits) | 10 Arabic-Indic digits: `٠ ١ ٢ ٣ ٤ ٥ ٦ ٧ ٨ ٩` |
+
+   Every training image is cropped to its ink and scaled to 28 x 28 the same way as a character cut from a page.
+   So EMNIST's 28 x 28, AHCD's 32 x 32 and MADBase's images all look alike to the model.
+2. **Page reader** ([`PageReader.cs`](PageReader.cs)). It finds lines and characters by the gaps between them, like
+   DocumentOcr's. One addition for Arabic: a band of rows much thinner than a line (the dots above and below letters
+   such as `ت` `ث` `ب`) joins the nearest line instead of becoming a line of its own. A letter's dots sit within its width,
+   so they stay part of the letter.
+3. **One script per line.** Some characters look alike across scripts: `V`/`٧`, `l`/`ا`, `0`/`٥`/`ه`. So each line takes
+   the script that most of its probability is on, and every character on it is then read within that script.
+4. **Word context**, per script: in a word of mostly letters, a digit becomes the letter it looks like (`1` → `I`,
+   `١` → `ا`, `٥` → `ه`); in a word of mostly digits, the other way round. English words then take one case.
+5. **Reading order** ([`TextOrder.cs`](TextOrder.cs)). Arabic lines are read right to left: the words from right to
+   left and each word's letters from right to left, but numbers keep their digits left to right, as Arabic writes them.
+
+### Limits
+
+Arabic handwriting is normally **joined**: letters connect within a word and change shape with their position (start,
+middle, end). The public data sets have **isolated** letters only, so this sample reads pages of separated
+characters: forms, letters written one by one, the `demo` pages. Joined Arabic (and joined English) handwriting
+needs a model that reads whole words.
+
+Letters outside AHCD's 28 aren't known either: `ة`, `ى`, `ء` and alef with hamza (`أ إ آ`).
+
+## 1. Set up the Idrak CLI
+
+From the repository root:
+
+```sh
+dotnet tool restore        # installs Idrak.Cli 0.2.1 from dotnet-tools.json
+```
+
+## 2. Download the data
+
+From this folder (`samples/MultiLanguageOcr`):
+
+**EMNIST** (about 560 MB). Skip this if DocumentOcr or LettersCnn already downloaded it: the app looks in their
+`data` folders too.
+
+```sh
+dotnet idrak @emnist.rsp
+```
+
+**AHCD and MADBase** come from Kaggle, which needs a free account and an API token:
+
+1. On kaggle.com, open Settings → API → **Create New Token**. That downloads `kaggle.json`.
+2. Put it in `%USERPROFILE%\.kaggle\kaggle.json` (Windows) or `~/.kaggle/kaggle.json`. Or set `KAGGLE_USERNAME` and
+   `KAGGLE_KEY`, or run `dotnet idrak login kaggle`.
+3. Download both data sets:
+
+```sh
+dotnet idrak @arabic.rsp     # = dotnet idrak data download kaggle:mloey1/ahcd1 kaggle:mloey1/ahdd1 --cache data
+```
+
+The zips land in `data/downloads/kaggle/mloey1/ahcd1/latest/ahcd1.zip` and `.../ahdd1/latest/ahdd1.zip`. Keep them
+zipped: the app reads the CSV files inside them directly.
+
+| Archive | CSV files inside (found by name: train/test and image/label) |
+|---------|------------------------------------------------------------|
+| `ahcd1.zip` | 13,440 training and 3,360 test letters, one image of 32 x 32 values per line, labels 1 (ا) to 28 (ي) |
+| `ahdd1.zip` | 60,000 training and 10,000 test digits, one image of 28 x 28 values per line, labels 0 to 9 |
+
+Both data sets store each image column by column; the app transposes them upright. `train` prints a few Arabic test
+characters as the model sees them, so you can check they stand upright.
+
+## 3. Train
+
+```sh
+dotnet run -c Release -- train
+```
+
+By default the app trains on 60,000 EMNIST images, AHCD's 13,440 letters twice (it's the smallest set), and 30,000
+MADBase digits. It tests on 10,000 EMNIST, all 3,360 AHCD and 5,000 MADBase images, and trains for up to 12 epochs with
+early stopping. It then prints:
+
+- each character's test accuracy and the most common mistakes;
+- for each script and kind (Latin letters, Arabic digits...), the share read correctly and the share read in the
+  right script;
+- a few Arabic test characters as text drawings.
+
+The model is saved to `multilang.ikm`.
+
+| Option             | Default          | Meaning                                                    |
+|--------------------|------------------|------------------------------------------------------------|
+| `--epochs`         | 12               | Passes over the training set (at most)                     |
+| `--patience`       | 3                | Stop after N epochs without a lower validation loss        |
+| `--batch`          | 128              | Batch size                                                 |
+| `--train-samples`  | see above        | At most N images from each data set (for quick runs)       |
+| `--model`          | `multilang.ikm`  | Where to save the model package                            |
+| `--data`           | `data`           | Folder to search first for the downloads                   |
+
+## 4. Read a demo page
+
+```sh
+dotnet run -c Release -- demo
+```
+
+`demo` writes a page in both scripts, made from test characters the model never trained on. The Arabic lines are
+laid out right to left. Then it reads the page back and prints, for each line, the script it chose, the expected
+text, what it read, and the number of edits, plus the character error rate:
+
+```
+line 1 (Latin)
+  expected: HELLO WORLD 2026
+  read:     HELLO WORID 2026
+line 2 (Arabic)
+  expected: مرحبا بالعالم
+  read:     مرحبا بالعالم
+line 3 (Arabic)
+  expected: نص عربي ١٢٣٤٥
+  read:     نس عربي ١٢٣٤٥
+
+Character error rate: 4.8% (2 edits over 42 characters)
+```
+
+That output is from a small test model trained on font-rendered stand-ins, not the real data sets.
+
+Your own text: `--text "ROOM 101 OPENS AT 0815\nبيت ٢٠٢ مفتوح"` (`\n` starts a new line; use the 85 characters above).
+`--out FILE` chooses where the page is written.
+
+A Windows console shows Arabic letters unjoined, and may show a line in the wrong direction. The text read is also
+saved next to the page as a UTF-8 `.txt` file (`page.txt`), and an editor such as Notepad or VS Code shows it joined
+and right to left.
+
+## 5. Read your own page
+
+```sh
+dotnet run -c Release -- ocr page.pgm                      # the demo's page
+dotnet run -c Release -- ocr C:\path\to\form.png           # a scan or photo of your own
+```
+
+Each line prints with its script (`[en]` or `[ar]`), along with the least certain character of each line. The text is
+also written to a `.txt` file next to the image.
+
+For the best results, write characters separately with clear gaps (Arabic letters in their isolated forms). Keep lines
+straight and apart, and crop the scan to the text.
+
+## How the code uses Idrak
+
+- **Data**: three data sets joined into one `Dataset.FromClassLabels(...)` of 85 classes. `DataLoader` with
+  `Transforms = [new RandomShift(2), new RandomRotation(8)]`.
+- **Network and training**: the builder chain and `TrainingRun` of the other samples. The network is a little wider
+  (48 and 96 filters, 384 hidden units) for 85 classes. `EarlyStoppingPatience` keeps the best epoch.
+- **Inference**: one `Predict(list)` call for all the characters of a page. `ClassPrediction.Scores` gives every
+  class's probability: summed per script it picks the line's script, and filtered to that script it picks each
+  character.
+- **Images**: `ImageCodecs.Decode` for the page, and `ImageData.Resize` for grey conversion and for shrinking each
+  character to 28 x 28.

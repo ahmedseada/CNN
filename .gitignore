@@ -25,3 +25,4 @@ samples/**/test-digits/
 samples/**/test-letters/
 *.ikm
 samples/**/page.pgm
+samples/**/page.txt
