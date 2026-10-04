@@ -74,7 +74,7 @@ Measured runs:
 
 | Run | Device | Training time | Test accuracy |
 |-----|--------|---------------|---------------|
-| `train` (3 epochs, 60,000 images) | `cuda:0` (NVIDIA GPU) | about 12 seconds | 98.8-99.0% |
+| `train` (3 epochs, 60,000 images) | `cuda:0` (NVIDIA GPU) | about 12 seconds | 98.7% |
 | `train` (3 epochs, 60,000 images) | 4-core CPU | about 2 minutes | 99.1% |
 | `train --epochs 1 --train-samples 10000` | 4-core CPU | about 10 seconds | 96.7% |
 
