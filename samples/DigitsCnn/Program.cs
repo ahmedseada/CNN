@@ -50,6 +50,8 @@ return 0;
 
 static void Train(Options o)
 {
+    const int EvaluationBatchSize = 512;
+
     var (train, test, testLabels) = Mnist.Load(o.DataFolder);
     if (o.TrainSamples is int n && n < train.Count)
         train = train.Subset([.. Enumerable.Range(0, n)]);
@@ -72,7 +74,7 @@ static void Train(Options o)
         Loss = Losses.CrossEntropy,
         Optimizer = p => new Adam(p, 1e-3f),
         Train = train.Batches(o.BatchSize, shuffle: true, seed: 1),
-        Validation = test.Batches(512),
+        Validation = test.Batches(EvaluationBatchSize),
         Epochs = o.Epochs,
         Metrics = [Metric.Accuracy],
         OnEpoch = e => Console.WriteLine(
@@ -81,9 +83,11 @@ static void Train(Options o)
     }.Fit();
     Console.WriteLine($"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s, best epoch {history.BestEpoch}");
 
-    // One image in, the most likely digit (with every digit's probability) out.
+    // One image in, the most likely digit (with every digit's probability) out. BatchSize splits large inputs
+    // (the 10,000 test images below) into GPU-sized batches; one 10,000-image batch fails to launch on CUDA.
     using var predictor = Predictor.For(model)
         .InputShape(1, Mnist.Rows, Mnist.Columns)
+        .BatchSize(EvaluationBatchSize)
         .Softmax()
         .Classes(Mnist.Digits)
         .Build();

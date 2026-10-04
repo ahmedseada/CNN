@@ -70,12 +70,13 @@ The app trains for 3 epochs, printing the loss and accuracy after each one. It t
 | `--model`          | `digits.ikm` | Where to save the model package                 |
 | `--data`           | `data`       | Folder to search for the MNIST files            |
 
-Measured on a 4-core CPU without a GPU:
+Measured runs:
 
-| Run | Time | Test accuracy |
-|-----|------|---------------|
-| `train` (3 epochs, 60,000 images) | about 2 minutes | 99.1% |
-| `train --epochs 1 --train-samples 10000` | about 10 seconds | 96.7% |
+| Run | Device | Training time | Test accuracy |
+|-----|--------|---------------|---------------|
+| `train` (3 epochs, 60,000 images) | `cuda:0` (NVIDIA GPU) | about 12 seconds | 98.8-99.0% |
+| `train` (3 epochs, 60,000 images) | 4-core CPU | about 2 minutes | 99.1% |
+| `train --epochs 1 --train-samples 10000` | 4-core CPU | about 10 seconds | 96.7% |
 
 ## 4. Predict
 
@@ -133,7 +134,12 @@ var history = new TrainingRun
 and every digit's score). It also saves and reloads the model as one package:
 
 ```csharp
-using var predictor = Predictor.For(model).InputShape(1, 28, 28).Softmax().Classes(Digits).Build();
+using var predictor = Predictor.For(model)
+    .InputShape(1, 28, 28)
+    .BatchSize(512)          // predict large inputs (the 10,000 test images) in GPU-sized batches
+    .Softmax()
+    .Classes(Digits)
+    .Build();
 predictor.Save("digits.ikm");
 
 var saved = Predictor.Load("digits.ikm");
