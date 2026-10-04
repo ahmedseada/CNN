@@ -1,25 +1,25 @@
 using System.Diagnostics;
 using CnnSamples.Shared;
-using DigitsCnn;
 using Idrak;
 using Idrak.Data;
 using Idrak.Inference;
 using Idrak.Layers;
 using Idrak.Optimizers;
 using Idrak.Training;
+using LettersCnn;
 
-// DigitsCnn: a small convolutional network that reads handwritten digits 0-9 (MNIST),
+// LettersCnn: a convolutional network that reads handwritten English letters A-Z (EMNIST Letters),
 // written with Idrak's fluent API (network builder, data extensions, TrainingRun, predictor builder).
 //
-//   dotnet idrak @mnist.rsp                       download MNIST with the Idrak CLI (once)
-//   dotnet run -- train   [--epochs 3] [--patience 2] [--batch 64] [--train-samples 60000] [--model digits.ikm] [--data data]
-//   dotnet run -- predict <image.png|bmp|pgm> [--model digits.ikm]
-//   dotnet run -- export  [--count 20] [--out test-digits]   test images as PGM files, e.g. for `idrak predict`
+//   dotnet idrak @emnist.rsp                      download EMNIST with the Idrak CLI (once, about 560 MB)
+//   dotnet run -- train   [--epochs 8] [--patience 3] [--batch 128] [--train-samples N] [--model letters.ikm] [--data data]
+//   dotnet run -- predict <image.png|bmp|pgm> [--model letters.ikm]
+//   dotnet run -- export  [--count 26] [--out test-letters]   test images as PGM files, e.g. for `idrak predict`
 
-int[] imageShape = [1, Mnist.Rows, Mnist.Columns];
+int[] imageShape = [1, Emnist.Rows, Emnist.Columns];
 var defaults = new SampleOptions(
-    Command: "train", ImagePath: null, Epochs: 3, Patience: 2, BatchSize: 64, TrainSamples: null,
-    ModelPath: "digits.ikm", DataFolder: "data", ExportCount: 20, ExportFolder: "test-digits");
+    Command: "train", ImagePath: null, Epochs: 8, Patience: 3, BatchSize: 128, TrainSamples: null,
+    ModelPath: "letters.ikm", DataFolder: "data", ExportCount: 26, ExportFolder: "test-letters");
 
 SampleOptions options;
 try
@@ -62,19 +62,21 @@ void Train(SampleOptions o)
 {
     const int EvaluationBatchSize = 512;
 
-    var (train, test, testLabels) = Mnist.Load(o.DataFolder);
+    var (train, test, testLabels) = Emnist.Load(o.DataFolder);
     if (o.TrainSamples is int n && n < train.Count)
         train = train.Subset([.. Enumerable.Range(0, n)]);
-    Console.WriteLine($"MNIST: {train.Count:N0} training and {test.Count:N0} test images");
+    Console.WriteLine($"EMNIST Letters: {train.Count:N0} training and {test.Count:N0} test images");
 
-    // Two convolution blocks, then a small classifier head with one logit per digit.
-    var network = Network.Image(channels: 1, height: Mnist.Rows, width: Mnist.Columns)
+    // Two blocks of two convolutions with batch normalization, then a classifier head with one logit per letter.
+    var network = Network.Image(channels: 1, height: Emnist.Rows, width: Emnist.Columns)
         .Seed(1)
-        .Conv2d(32, kernelSize: 3, padding: 1).ReLU().MaxPool2d(2)    // 32 x 14 x 14
-        .Conv2d(64, kernelSize: 3, padding: 1).ReLU().MaxPool2d(2)    // 64 x 7 x 7
+        .Conv2d(32, kernelSize: 3, padding: 1).BatchNorm().ReLU()
+        .Conv2d(32, kernelSize: 3, padding: 1).BatchNorm().ReLU().MaxPool2d(2)    // 32 x 14 x 14
+        .Conv2d(64, kernelSize: 3, padding: 1).BatchNorm().ReLU()
+        .Conv2d(64, kernelSize: 3, padding: 1).BatchNorm().ReLU().MaxPool2d(2)    // 64 x 7 x 7
         .Flatten()
-        .Linear(128).ReLU().Dropout(0.25f)
-        .Linear(Mnist.Digits.Length);
+        .Linear(256).ReLU().Dropout(0.4f)
+        .Linear(Emnist.Letters.Length);
     using var model = network.Build();
 
     using var best = new BestWeights(model);
@@ -82,19 +84,20 @@ void Train(SampleOptions o)
     var history = new TrainingRun
     {
         Model = model,
-        Loss = Losses.CrossEntropy,
-        Optimizer = p => new Adam(p, 1e-3f),
+        Loss = (logits, targets) => Losses.CrossEntropy(logits, targets, 0.1f),   // label smoothing 0.1
+        Optimizer = p => new AdamW(p, 2e-3f, weightDecay: 1e-4f),
+        Scheduler = optimizer => new CosineAnnealing(optimizer, totalEpochs: o.Epochs, minLearningRate: 1e-5f, warmupEpochs: 1),
         Train = train.Batches(o.BatchSize, shuffle: true, seed: 1),
         Validation = test.Batches(EvaluationBatchSize),
         Epochs = o.Epochs,
         Metrics = [Metric.Accuracy],
-        EarlyStoppingPatience = o.Patience,    // stop after this many epochs without a lower validation loss
+        EarlyStoppingPatience = o.Patience,   // stop after this many epochs without a lower validation loss
         OnEpoch = e =>
         {
             Console.WriteLine(
                 $"epoch {e.Epoch}/{e.Epochs}  loss {e.Loss:F4}  acc {e.Metrics["accuracy"]:P2}  " +
                 $"val loss {e.ValidationLoss:F4}  val acc {e.ValidationMetrics!["accuracy"]:P2}  " +
-                $"({e.Duration.TotalSeconds:F1}s){(e.IsBest ? "  *" : "")}");
+                $"lr {e.LearningRate:G3}  ({e.Duration.TotalSeconds:F1}s){(e.IsBest ? "  *" : "")}");
             best.Track(e);
         },
     }.Fit();
@@ -103,30 +106,28 @@ void Train(SampleOptions o)
         $"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s; kept the weights of epoch {best.Epoch} " +
         $"(val loss {history.BestLoss:F4}){(history.StoppedEarly ? ", stopped early" : "")}");
 
-    // One image in, the most likely digit (with every digit's probability) out. BatchSize splits large inputs
-    // (the 10,000 test images below) into GPU-sized batches; one 10,000-image batch fails to launch on CUDA in 0.2.0.
     using var predictor = Predictor.For(model)
         .InputShape(imageShape)
         .BatchSize(EvaluationBatchSize)
         .Softmax()
-        .Classes(Mnist.Digits)
+        .Classes(Emnist.Letters)
         .Build();
 
     var predicted = predictor.Predict(test).Select(p => p.Index).ToArray();
-    double accuracy = ConsoleReport.PrintResults(testLabels, predicted, Mnist.Digits);
+    double accuracy = ConsoleReport.PrintResults(testLabels, predicted, Emnist.Letters);
 
     Console.WriteLine();
-    Console.WriteLine("A few test digits:");
+    Console.WriteLine("A few test letters:");
     foreach (var i in new[] { 0, 1, 2, 3, 4 })
     {
         var image = test.GetFeatures(i).ToArray();
         var answer = predictor.Predict(image);
-        ConsoleReport.PrintImage(image, Mnist.Rows, Mnist.Columns);
-        Console.WriteLine($"label {testLabels[i]}  predicted {answer.Class} ({answer.Probability:P1})");
+        ConsoleReport.PrintImage(image, Emnist.Rows, Emnist.Columns);
+        Console.WriteLine($"label {Emnist.Letters[testLabels[i]]}  predicted {answer.Class} ({answer.Probability:P1})");
         Console.WriteLine();
     }
 
-    ModelFiles.Save(predictor, o.ModelPath, network, model, Mnist.Digits, imageShape, accuracy);
+    ModelFiles.Save(predictor, o.ModelPath, network, model, Emnist.Letters, imageShape, accuracy);
     Console.WriteLine($"Saved the model to {Path.GetFullPath(o.ModelPath)}");
     Console.WriteLine($"Run it with the Idrak CLI: dotnet idrak predict {o.ModelPath} -i <image or folder> --top 3");
 }
@@ -134,28 +135,29 @@ void Train(SampleOptions o)
 void Predict(SampleOptions o)
 {
     if (o.ImagePath is null)
-        throw new ArgumentException("predict needs an image path: dotnet run -- predict digit.png");
+        throw new ArgumentException("predict needs an image path: dotnet run -- predict letter.png");
     if (!File.Exists(o.ModelPath))
         throw new FileNotFoundException($"No model at '{o.ModelPath}'. Run 'dotnet run -- train' first.");
 
     var saved = Predictor.Load(o.ModelPath);   // architecture, weights, input shape, softmax and classes
-    using var predictor = saved.Classes(saved.StoredClasses ?? Mnist.Digits).Build();
+    using var predictor = saved.Classes(saved.StoredClasses ?? Emnist.Letters).Build();
 
-    var pixels = ModelFiles.LoadLightOnDark(o.ImagePath, Mnist.Rows, Mnist.Columns);
-    ConsoleReport.PrintImage(pixels, Mnist.Rows, Mnist.Columns);
+    var pixels = ModelFiles.LoadLightOnDark(o.ImagePath, Emnist.Rows, Emnist.Columns);
+    ConsoleReport.PrintImage(pixels, Emnist.Rows, Emnist.Columns);
     var answer = predictor.Predict(pixels);
-    Console.WriteLine($"Predicted digit: {answer.Class} ({answer.Probability:P1})");
+    Console.WriteLine($"Predicted letter: {answer.Class} ({answer.Probability:P1})");
     foreach (var score in answer.Scores.Take(3))
         Console.WriteLine($"  {score.Class}: {score.Score:P1}");
 }
 
-// Writes the first test images as 28 x 28 PGM files named <index>_label<digit>.pgm.
+// Writes the first test images, upright, as 28 x 28 PGM files named <index>_label<letter>.pgm.
 void Export(SampleOptions o)
 {
-    var (_, test, testLabels) = Mnist.Load(o.DataFolder);
+    var (_, test, testLabels) = Emnist.Load(o.DataFolder);
     Directory.CreateDirectory(o.ExportFolder);
     int count = Math.Min(o.ExportCount, test.Count);
     for (int i = 0; i < count; i++)
-        ModelFiles.WritePgm(Path.Combine(o.ExportFolder, $"{i:D5}_label{testLabels[i]}.pgm"), test.GetFeatures(i), Mnist.Rows, Mnist.Columns);
+        ModelFiles.WritePgm(Path.Combine(o.ExportFolder, $"{i:D5}_label{Emnist.Letters[testLabels[i]]}.pgm"),
+            test.GetFeatures(i), Emnist.Rows, Emnist.Columns);
     Console.WriteLine($"Wrote {count} test images to {Path.GetFullPath(o.ExportFolder)}");
 }

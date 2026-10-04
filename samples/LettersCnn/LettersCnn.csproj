@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <RootNamespace>DigitsCnn</RootNamespace>
+    <RootNamespace>LettersCnn</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

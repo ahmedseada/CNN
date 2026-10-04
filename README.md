@@ -9,8 +9,10 @@ local .NET tool.
 | Sample | What it does |
 |--------|--------------|
 | [`samples/DigitsCnn`](samples/DigitsCnn/README.md) | Trains a CNN on MNIST and recognises handwritten digits 0-9 |
+| [`samples/LettersCnn`](samples/LettersCnn/README.md) | Trains a deeper CNN (batch norm, AdamW, cosine schedule) on EMNIST Letters and recognises handwritten letters A-Z |
 
-Each sample has its own `README.md` with the steps to download its data and run it.
+Each sample has its own `README.md` with the steps to download its data and run it. Code that all the samples use
+(IDX reading, console reports, model packages) lives in [`src/CnnSamples.Shared`](src/CnnSamples.Shared/README.md).
 
 ## Prerequisites
 
@@ -51,8 +53,8 @@ To install the CLI for every folder instead of this repository only, run `dotnet
 | `Directory.Build.props` | Settings shared by every project: `net10.0`, nullable, warnings as errors |
 | `dotnet-tools.json`   | Local tool manifest: `Idrak.Cli` 0.2.0                      |
 | `samples/`            | Runnable sample apps, one folder and README each            |
-| `src/`                | Shared libraries (empty for now)                            |
+| `src/CnnSamples.Shared` | Code every sample uses; see its README                    |
 | `tests/`              | Tests (empty for now)                                       |
 
-Downloaded datasets (`samples/*/data/`), exported test images (`samples/*/test-digits/`) and trained models
-(`*.ikm`) are git-ignored.
+Downloaded datasets (`samples/*/data/`), exported test images (`samples/*/test-digits/`, `samples/*/test-letters/`)
+and trained models (`*.ikm`) are git-ignored.

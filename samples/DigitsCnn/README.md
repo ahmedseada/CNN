@@ -63,8 +63,9 @@ lowest validation loss.
 
 The saved model always uses the weights of the best epoch (lowest validation loss), not the last epoch. If
 validation loss doesn't improve for `--patience` epochs, training stops early. Idrak's `RestoreBestWeights` restores
-the best weights only when early stopping ends the run. So the app keeps its own copy of the best epoch's weights and
-loads it after training, however training ended. It then prints a confusion matrix of the
+the best weights only when early stopping ends the run (fixed for Idrak 0.2.1). So the app keeps its own copy of the
+best epoch's weights (`BestWeights` in [`src/CnnSamples.Shared`](../../src/CnnSamples.Shared)) and loads it after
+training, however training ended. It then prints a confusion matrix of the
 10,000 test images, shows a few test digits as text drawings with their predictions, and saves the model package to
 `digits.ikm`. The package works in this app (step 4) and in the Idrak CLI (step 5).
 
@@ -140,8 +141,9 @@ To list what the package contains, run `dotnet idrak inspect digits.ikm`. Beside
 | `json/predictor.json` | `Predictor.Load` (this app) | Input shape, batch size, softmax, class names |
 | `json/training.json` | `idrak predict` | Task (`classification`), class names, input shape, test accuracy |
 
-`predictor.Save` writes only the first three entries. `AddCliSettings` in [`Program.cs`](Program.cs) rewrites the
-package with Idrak's `ModelPackage.Create(...)` writer and adds `training.json`. Without that entry, `idrak predict`
+`predictor.Save` writes only the first three entries. `ModelFiles.Save` in
+[`src/CnnSamples.Shared`](../../src/CnnSamples.Shared/ModelFiles.cs) rewrites the package with Idrak's
+`ModelPackage.Create(...)` writer and adds `training.json`. Without that entry, `idrak predict`
 treats the model as a regression and prints ten raw output scores instead of a digit.
 
 ## How the code uses Idrak's fluent API
@@ -160,7 +162,8 @@ using var model = Network.Image(channels: 1, height: 28, width: 28)
     .Build();
 ```
 
-**Data** ([`Mnist.cs`](Mnist.cs)): the IDX files become datasets through Idrak's data extensions:
+**Data** ([`Mnist.cs`](Mnist.cs), with the IDX reader in [`Idx.cs`](../../src/CnnSamples.Shared/Idx.cs)): the IDX
+files become datasets through Idrak's data extensions:
 
 ```csharp
 Dataset.FromClassLabels(images, labels, 10, Digits).WithFeatureShape(1, 28, 28);
@@ -177,9 +180,9 @@ var history = new TrainingRun
     Train = train.Batches(64, shuffle: true), Validation = test.Batches(512),
     Epochs = 3, Metrics = [Metric.Accuracy],
     EarlyStoppingPatience = 2,                                   // stop after 2 epochs without improvement
-    OnEpoch = e => { if (e.IsBest) model.Save(bestWeights); },   // keep the best epoch's weights
+    OnEpoch = e => best.Track(e),     // keep the best epoch's weights (BestWeights, in the shared library)
 }.Fit();
-model.Load(bestWeights);                                          // also when training ran to the last epoch
+best.Restore();                       // also when training ran to the last epoch
 ```
 
 **Inference**: the predictor builder turns the network's outputs into a `ClassPrediction` (the digit, its probability
