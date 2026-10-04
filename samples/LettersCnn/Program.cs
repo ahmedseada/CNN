@@ -64,7 +64,7 @@ void Train(SampleOptions o)
 
     var (train, test, testLabels) = Emnist.Load(o.DataFolder);
     if (o.TrainSamples is int n && n < train.Count)
-        train = train.Subset([.. Enumerable.Range(0, n)]);
+        train = train.Subset(TestImages.RandomSubset(train.Count, n));   // a random N, so every class is in it
     Console.WriteLine($"EMNIST Letters: {train.Count:N0} training and {test.Count:N0} test images");
 
     // Two blocks of two convolutions with batch normalization, then a classifier head with one logit per letter.
@@ -118,7 +118,7 @@ void Train(SampleOptions o)
 
     Console.WriteLine();
     Console.WriteLine("A few test letters:");
-    foreach (var i in new[] { 0, 1, 2, 3, 4 })
+    foreach (var i in TestImages.OnePerClass(testLabels, Emnist.Letters.Length, 5))
     {
         var image = test.GetFeatures(i).ToArray();
         var answer = predictor.Predict(image);
@@ -150,14 +150,14 @@ void Predict(SampleOptions o)
         Console.WriteLine($"  {score.Class}: {score.Score:P1}");
 }
 
-// Writes the first test images, upright, as 28 x 28 PGM files named <index>_label<letter>.pgm.
+// Writes test images, one of each letter in turn and upright, as 28 x 28 PGM files named <index>_label<letter>.pgm.
 void Export(SampleOptions o)
 {
     var (_, test, testLabels) = Emnist.Load(o.DataFolder);
     Directory.CreateDirectory(o.ExportFolder);
-    int count = Math.Min(o.ExportCount, test.Count);
-    for (int i = 0; i < count; i++)
+    var picked = TestImages.OnePerClass(testLabels, Emnist.Letters.Length, o.ExportCount);
+    foreach (int i in picked)
         ModelFiles.WritePgm(Path.Combine(o.ExportFolder, $"{i:D5}_label{Emnist.Letters[testLabels[i]]}.pgm"),
             test.GetFeatures(i), Emnist.Rows, Emnist.Columns);
-    Console.WriteLine($"Wrote {count} test images to {Path.GetFullPath(o.ExportFolder)}");
+    Console.WriteLine($"Wrote {picked.Length} test images, one of each class in turn, to {Path.GetFullPath(o.ExportFolder)}");
 }

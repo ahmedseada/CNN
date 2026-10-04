@@ -74,7 +74,7 @@ training, however training ended. It then prints a confusion matrix of the
 | `--epochs`         | 3            | Passes over the training set (at most)          |
 | `--patience`       | 2            | Stop after N epochs without a lower validation loss |
 | `--batch`          | 64           | Batch size                                      |
-| `--train-samples`  | all (60,000) | Train on only the first N images                |
+| `--train-samples`  | all (60,000) | Train on N images chosen at random (seeded)          |
 | `--model`          | `digits.ikm` | Where to save the model package                 |
 | `--data`           | `data`       | Folder to search for the MNIST files            |
 
@@ -84,12 +84,14 @@ Measured runs:
 |-----|--------|---------------|---------------|
 | `train` (3 epochs, 60,000 images) | `cuda:0` (NVIDIA GPU) | about 12 seconds | 98.7% |
 | `train` (3 epochs, 60,000 images) | 4-core CPU | about 2 minutes | 99.1% |
-| `train --epochs 1 --train-samples 10000` | 4-core CPU | about 10 seconds | 96.7% |
+| `train --epochs 1 --train-samples 10000` | 4-core CPU | about 10 seconds | 96.0% |
 
 ## 4. Predict
 
 ```sh
-dotnet run -c Release -- predict my-digit.png
+dotnet run -c Release -- export                                   # test images to try (step 5)
+dotnet run -c Release -- predict test-digits/00000_label7.pgm     # one of them
+dotnet run -c Release -- predict C:\path\to\your-drawing.png      # or any digit image of your own
 ```
 
 The app accepts PNG, BMP, PGM and PPM files. It converts the image to greyscale and resizes it to 28 x 28. If the
@@ -105,10 +107,11 @@ The CLI uses images exactly as given. It does not invert dark-on-light drawings,
 a white digit on a black background. To get some, export test-set digits from the downloaded data:
 
 ```sh
-dotnet run -c Release -- export                 # 20 images to test-digits/ (--count N, --out DIR)
+dotnet run -c Release -- export                 # 20 images to test-digits/, 2 of each digit (--count N, --out DIR)
 ```
 
-The files are 28 x 28 PGM images named `<index>_label<digit>.pgm`, so each name shows the correct answer. Then run:
+The files are 28 x 28 PGM images named `<index>_label<digit>.pgm`, where `<index>` is the image's place in the test
+set, so each name shows the correct answer. The app picks one image of each digit in turn. Then run:
 
 ```sh
 # a folder: one row per image
@@ -117,7 +120,7 @@ dotnet idrak predict digits.ikm -i test-digits
 # one image, with the three most likely digits
 dotnet idrak predict digits.ikm -i test-digits/00000_label7.pgm --top 3
 
-# every row to a file (.csv, .jsonl or .json); the table above shortens long file names
+# every row to a file (.csv, .jsonl or .json), with full file names
 dotnet idrak predict digits.ikm -i test-digits --top 3 -o predictions.csv
 
 # machine-readable output, on a chosen device
@@ -131,6 +134,10 @@ test-digits/0...  7           0.999578
 test-digits/0...  2           0.998377
 test-digits/0...  1           0.998937
 ```
+
+Idrak CLI 0.2.0 cuts the `file` column to its first 13 characters, so every row shows the folder name. 0.2.1 shows each
+file's name instead ([ahmedseada/Idrak#1](https://github.com/ahmedseada/Idrak/pull/1)). Until then, use `-o` to see
+which file is which.
 
 To list what the package contains, run `dotnet idrak inspect digits.ikm`. Besides its `manifest.json`, the package holds four entries:
 
@@ -167,7 +174,7 @@ files become datasets through Idrak's data extensions:
 
 ```csharp
 Dataset.FromClassLabels(images, labels, 10, Digits).WithFeatureShape(1, 28, 28);
-train.Subset([.. Enumerable.Range(0, n)]);       // --train-samples
+train.Subset(TestImages.RandomSubset(train.Count, n));   // --train-samples: a random N (shared library)
 train.Batches(64, shuffle: true, seed: 1);       // a DataLoader
 ```
 

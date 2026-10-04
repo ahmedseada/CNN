@@ -9,6 +9,7 @@ A class library with the code that every sample in this repository uses. It is n
 | [`BestWeights.cs`](BestWeights.cs) | Keeps the best epoch's weights during training and restores them afterwards |
 | [`ModelFiles.cs`](ModelFiles.cs) | Saves a predictor as a package that both `Predictor.Load` and `idrak predict` can run; writes and reads images |
 | [`ConsoleReport.cs`](ConsoleReport.cs) | Prints images as text and the test results (confusion matrix, per-class accuracy, common mistakes) |
+| [`TestImages.cs`](TestImages.cs) | Picks images: a seeded random training subset, and test images that cover every class in turn |
 | [`SampleOptions.cs`](SampleOptions.cs) | Parses the shared command line: `train`, `predict IMAGE`, `export` and their options |
 
 ## Workarounds for Idrak 0.2.0

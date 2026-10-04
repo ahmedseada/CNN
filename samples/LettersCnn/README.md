@@ -69,17 +69,28 @@ with their predictions, and saves the model package to `letters.ikm`.
 | `--epochs`         | 8             | Passes over the training set (at most)               |
 | `--patience`       | 3             | Stop after N epochs without a lower validation loss  |
 | `--batch`          | 128           | Batch size                                           |
-| `--train-samples`  | all (124,800) | Train on only the first N images                     |
+| `--train-samples`  | all (124,800) | Train on N images chosen at random (seeded)          |
 | `--model`          | `letters.ikm` | Where to save the model package                      |
 | `--data`           | `data`        | Folder to search for the EMNIST files                |
 
 This network is larger than DigitsCnn's and trains on twice as many images, so each epoch takes longer. A GPU helps a
 lot. For a quick check, use `--epochs 2 --train-samples 20000`.
 
+A measured run:
+
+| Run | Device | Training time | Test accuracy |
+|-----|--------|---------------|---------------|
+| `train` (8 epochs, 124,800 images) | `cuda:0` (NVIDIA RTX 5070 Ti) | about 2.3 minutes (17 s per epoch) | 95.0% |
+
+Most mistakes in that run were between letters whose two cases look like another letter's: I and L (`I`, `l`), G and Q
+(`g`, `q`), and U and V. Published results for EMNIST Letters are around 95-96%.
+
 ## 4. Predict
 
 ```sh
-dotnet run -c Release -- predict my-letter.png
+dotnet run -c Release -- export                                    # test images to try (step 5)
+dotnet run -c Release -- predict test-letters/00000_labelA.pgm     # one of them
+dotnet run -c Release -- predict C:\path\to\your-drawing.png       # or any letter image of your own
 ```
 
 The app accepts PNG, BMP, PGM and PPM files. It converts the image to greyscale, resizes it to 28 x 28 and, if the
@@ -92,12 +103,18 @@ predicted letter and the top three probabilities.
 some, export test images:
 
 ```sh
-dotnet run -c Release -- export                    # 26 images to test-letters/ (--count N, --out DIR)
+dotnet run -c Release -- export                    # 26 images to test-letters/, one per letter (--count N, --out DIR)
 dotnet idrak predict letters.ikm -i test-letters --top 3
 dotnet idrak predict letters.ikm -i test-letters --top 3 -o predictions.csv
 ```
 
-The files are named `<index>_label<letter>.pgm`, so each name shows the correct answer.
+The files are named `<index>_label<letter>.pgm`, where `<index>` is the image's place in the test set, so each name
+shows the correct answer. EMNIST's test set is sorted by letter (the first 800 images are all A), so the app picks
+one image of each letter in turn instead of the first 26.
+
+Idrak CLI 0.2.0 cuts the table's `file` column to its first 13 characters, so every row shows `test-letters\...`.
+0.2.1 shows each file's name instead ([ahmedseada/Idrak#1](https://github.com/ahmedseada/Idrak/pull/1)). Until then,
+`-o predictions.csv` lists the full names.
 
 ## How the code uses Idrak
 
