@@ -58,13 +58,20 @@ If the S3 mirror is unreachable, use the same file names from `https://storage.g
 dotnet run -c Release -- train
 ```
 
-The app trains for 3 epochs, printing the loss and accuracy after each one. It then prints a confusion matrix of the
+The app trains for up to 3 epochs, printing the loss and accuracy after each one. A `*` marks an epoch with a new
+lowest validation loss.
+
+The saved model always uses the weights of the best epoch (lowest validation loss), not the last epoch. If
+validation loss doesn't improve for `--patience` epochs, training stops early. Idrak's `RestoreBestWeights` restores
+the best weights only when early stopping ends the run. So the app keeps its own copy of the best epoch's weights and
+loads it after training, however training ended. It then prints a confusion matrix of the
 10,000 test images, shows a few test digits as text drawings with their predictions, and saves the model package to
 `digits.ikm`. The package works in this app (step 4) and in the Idrak CLI (step 5).
 
 | Option             | Default      | Meaning                                         |
 |--------------------|--------------|-------------------------------------------------|
-| `--epochs`         | 3            | Passes over the training set                    |
+| `--epochs`         | 3            | Passes over the training set (at most)          |
+| `--patience`       | 2            | Stop after N epochs without a lower validation loss |
 | `--batch`          | 64           | Batch size                                      |
 | `--train-samples`  | all (60,000) | Train on only the first N images                |
 | `--model`          | `digits.ikm` | Where to save the model package                 |
@@ -169,7 +176,10 @@ var history = new TrainingRun
     Model = model, Loss = Losses.CrossEntropy, Optimizer = p => new Adam(p, 1e-3f),
     Train = train.Batches(64, shuffle: true), Validation = test.Batches(512),
     Epochs = 3, Metrics = [Metric.Accuracy],
+    EarlyStoppingPatience = 2,                                   // stop after 2 epochs without improvement
+    OnEpoch = e => { if (e.IsBest) model.Save(bestWeights); },   // keep the best epoch's weights
 }.Fit();
+model.Load(bestWeights);                                          // also when training ran to the last epoch
 ```
 
 **Inference**: the predictor builder turns the network's outputs into a `ClassPrediction` (the digit, its probability

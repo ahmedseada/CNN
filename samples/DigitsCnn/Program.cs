@@ -12,7 +12,7 @@ using Idrak.Training;
 // written with Idrak's fluent API (network builder, data extensions, TrainingRun, predictor builder).
 //
 //   dotnet idrak @mnist.rsp                       download MNIST with the Idrak CLI (once)
-//   dotnet run -- train   [--epochs 3] [--batch 64] [--train-samples 60000] [--model digits.ikm] [--data data]
+//   dotnet run -- train   [--epochs 3] [--patience 2] [--batch 64] [--train-samples 60000] [--model digits.ikm] [--data data]
 //   dotnet run -- predict <image.png|bmp|pgm> [--model digits.ikm]
 //   dotnet run -- export  [--count 20] [--out test-digits]   test images as PGM files, e.g. for `idrak predict`
 
@@ -72,6 +72,10 @@ static void Train(Options o)
         .Linear(Mnist.Digits.Length);
     using var model = network.Build();
 
+    // The best epoch's weights. Idrak's RestoreBestWeights puts them back only when early stopping ends the run,
+    // not when it runs to the last epoch, so keep a copy of them and restore it after either ending.
+    using var bestWeights = new MemoryStream();
+
     var stopwatch = Stopwatch.StartNew();
     var history = new TrainingRun
     {
@@ -82,11 +86,26 @@ static void Train(Options o)
         Validation = test.Batches(EvaluationBatchSize),
         Epochs = o.Epochs,
         Metrics = [Metric.Accuracy],
-        OnEpoch = e => Console.WriteLine(
-            $"epoch {e.Epoch}/{e.Epochs}  loss {e.Loss:F4}  acc {e.Metrics["accuracy"]:P2}  " +
-            $"val loss {e.ValidationLoss:F4}  val acc {e.ValidationMetrics!["accuracy"]:P2}  ({e.Duration.TotalSeconds:F1}s)"),
+        EarlyStoppingPatience = o.Patience,    // stop after this many epochs without a lower validation loss
+        OnEpoch = e =>
+        {
+            Console.WriteLine(
+                $"epoch {e.Epoch}/{e.Epochs}  loss {e.Loss:F4}  acc {e.Metrics["accuracy"]:P2}  " +
+                $"val loss {e.ValidationLoss:F4}  val acc {e.ValidationMetrics!["accuracy"]:P2}  " +
+                $"({e.Duration.TotalSeconds:F1}s){(e.IsBest ? "  *" : "")}");
+            if (e.IsBest)
+            {
+                bestWeights.SetLength(0);
+                model.Save(bestWeights);
+            }
+        },
     }.Fit();
-    Console.WriteLine($"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s, best epoch {history.BestEpoch}");
+
+    bestWeights.Position = 0;
+    model.Load(bestWeights);
+    Console.WriteLine(
+        $"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s; kept the weights of epoch {history.BestEpoch} " +
+        $"(val loss {history.BestLoss:F4}){(history.StoppedEarly ? ", stopped early" : "")}");
 
     // One image in, the most likely digit (with every digit's probability) out. BatchSize splits large inputs
     // (the 10,000 test images below) into GPU-sized batches; one 10,000-image batch fails to launch on CUDA.
@@ -230,11 +249,11 @@ static void PrintConfusion(int[] labels, int[] predicted)
 
 internal sealed record Options(
     string Command, string? ImagePath, int Epochs, int BatchSize, int? TrainSamples, string ModelPath, string DataFolder,
-    int ExportCount, string ExportFolder)
+    int Patience, int ExportCount, string ExportFolder)
 {
     public static Options Parse(string[] args)
     {
-        var o = new Options("train", null, 3, 64, null, "digits.ikm", "data", 20, "test-digits");
+        var o = new Options("train", null, 3, 64, null, "digits.ikm", "data", 2, 20, "test-digits");
         int i = 0;
         if (args.Length > 0 && !args[0].StartsWith("--"))
             o = o with { Command = args[i++].ToLowerInvariant() };
@@ -247,6 +266,7 @@ internal sealed record Options(
             o = args[i] switch
             {
                 "--epochs" => o with { Epochs = int.Parse(Value()) },
+                "--patience" => o with { Patience = int.Parse(Value()) },
                 "--batch" => o with { BatchSize = int.Parse(Value()) },
                 "--train-samples" => o with { TrainSamples = int.Parse(Value()) },
                 "--model" => o with { ModelPath = Value() },
