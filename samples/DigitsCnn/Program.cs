@@ -7,48 +7,63 @@ using Idrak.Layers;
 using Idrak.Optimizers;
 using Idrak.Training;
 
-// DigitsCnn: a small convolutional network that reads handwritten digits 0-9 (MNIST).
+// DigitsCnn: a small convolutional network that reads handwritten digits 0-9 (MNIST),
+// written with Idrak's fluent API (network builder, data extensions, TrainingRun, predictor builder).
 //
-//   dotnet run -- train   [--epochs 3] [--batch 64] [--train-samples 60000] [--model digits.ikm] [--data data/mnist]
+//   dotnet idrak @mnist.rsp                       download MNIST with the Idrak CLI (once)
+//   dotnet run -- train   [--epochs 3] [--batch 64] [--train-samples 60000] [--model digits.ikm] [--data data]
 //   dotnet run -- predict <image.png|bmp|pgm> [--model digits.ikm]
 
-string[] digitNames = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
-
-var options = Options.Parse(args);
+Options options;
+try
+{
+    options = Options.Parse(args);
+}
+catch (Exception e) when (e is ArgumentException or FormatException)
+{
+    Console.Error.WriteLine(e.Message);
+    return 1;
+}
 Console.WriteLine($"Device: {Device.Default}");
 
-switch (options.Command)
+try
 {
-    case "train":
-        await TrainAsync(options);
-        break;
-    case "predict":
-        Predict(options);
-        break;
-    default:
-        Console.WriteLine($"Unknown command '{options.Command}'. Use 'train' or 'predict <image>'.");
-        return 1;
+    switch (options.Command)
+    {
+        case "train":
+            Train(options);
+            break;
+        case "predict":
+            Predict(options);
+            break;
+        default:
+            Console.Error.WriteLine($"Unknown command '{options.Command}'. Use 'train' or 'predict <image>'.");
+            return 1;
+    }
+}
+catch (Exception e) when (e is IOException or ArgumentException or InvalidDataException)
+{
+    Console.Error.WriteLine(e.Message);
+    return 1;
 }
 return 0;
 
-async Task TrainAsync(Options o)
+static void Train(Options o)
 {
-    var (train, test) = await Mnist.LoadAsync(o.DataFolder);
+    var (train, test, testLabels) = Mnist.Load(o.DataFolder);
+    if (o.TrainSamples is int n && n < train.Count)
+        train = train.Subset([.. Enumerable.Range(0, n)]);
     Console.WriteLine($"MNIST: {train.Count:N0} training and {test.Count:N0} test images");
 
-    var trainSet = ToDataset(train, o.TrainSamples);
-    var testSet = ToDataset(test, null);
-
-    // Two convolution blocks, then a small classifier head that outputs one logit per digit.
+    // Two convolution blocks, then a small classifier head with one logit per digit.
     using var model = Network.Image(channels: 1, height: Mnist.Rows, width: Mnist.Columns)
         .Seed(1)
         .Conv2d(32, kernelSize: 3, padding: 1).ReLU().MaxPool2d(2)    // 32 x 14 x 14
         .Conv2d(64, kernelSize: 3, padding: 1).ReLU().MaxPool2d(2)    // 64 x 7 x 7
         .Flatten()
         .Linear(128).ReLU().Dropout(0.25f)
-        .Linear(digitNames.Length)
+        .Linear(Mnist.Digits.Length)
         .Build();
-    Console.WriteLine(model);
 
     var stopwatch = Stopwatch.StartNew();
     var history = new TrainingRun
@@ -56,8 +71,8 @@ async Task TrainAsync(Options o)
         Model = model,
         Loss = Losses.CrossEntropy,
         Optimizer = p => new Adam(p, 1e-3f),
-        Train = trainSet.Batches(o.BatchSize, shuffle: true),
-        Validation = testSet.Batches(512),
+        Train = train.Batches(o.BatchSize, shuffle: true, seed: 1),
+        Validation = test.Batches(512),
         Epochs = o.Epochs,
         Metrics = [Metric.Accuracy],
         OnEpoch = e => Console.WriteLine(
@@ -66,26 +81,24 @@ async Task TrainAsync(Options o)
     }.Fit();
     Console.WriteLine($"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s, best epoch {history.BestEpoch}");
 
+    // One image in, the most likely digit (with every digit's probability) out.
     using var predictor = Predictor.For(model)
         .InputShape(1, Mnist.Rows, Mnist.Columns)
         .Softmax()
-        .Classes(digitNames)
+        .Classes(Mnist.Digits)
         .Build();
 
-    var confusion = new int[digitNames.Length, digitNames.Length];
-    var predictions = predictor.Predict(testSet);
-    for (int i = 0; i < predictions.Count; i++)
-        confusion[test.Labels[i], predictions[i].Index]++;
-    PrintConfusion(confusion);
+    var predictions = predictor.Predict(test);
+    PrintConfusion(testLabels, predictions.Select(p => p.Index).ToArray());
 
     Console.WriteLine();
     Console.WriteLine("A few test digits:");
     foreach (var i in new[] { 0, 1, 2, 3, 4 })
     {
-        var image = Row(test.Images, i);
+        var image = test.GetFeatures(i).ToArray();
         var answer = predictor.Predict(image);
         PrintDigit(image);
-        Console.WriteLine($"label {test.Labels[i]}  predicted {answer.Class} ({answer.Probability:P1})");
+        Console.WriteLine($"label {testLabels[i]}  predicted {answer.Class} ({answer.Probability:P1})");
         Console.WriteLine();
     }
 
@@ -93,18 +106,21 @@ async Task TrainAsync(Options o)
     Console.WriteLine($"Saved the model to {Path.GetFullPath(o.ModelPath)}");
 }
 
-void Predict(Options o)
+static void Predict(Options o)
 {
     if (o.ImagePath is null)
         throw new ArgumentException("predict needs an image path: dotnet run -- predict digit.png");
     if (!File.Exists(o.ModelPath))
         throw new FileNotFoundException($"No model at '{o.ModelPath}'. Run 'dotnet run -- train' first.");
 
-    var saved = Predictor.Load(o.ModelPath);   // architecture, weights, input shape, softmax and classes
-    using var predictor = saved.Classes(saved.StoredClasses ?? digitNames).Build();
+    // The package restores the architecture, weights, input shape, softmax and class names.
+    var saved = Predictor.Load(o.ModelPath);
+    using var predictor = saved
+        .Classes(saved.StoredClasses ?? Mnist.Digits)
+        .Build();
 
     // MNIST digits are light strokes on a dark background; flip images drawn dark on light.
-    var pixels = ImageCodecs.Load(o.ImagePath, 1, Mnist.Rows, Mnist.Columns);
+    var pixels = ImageCodecs.Load(o.ImagePath, channels: 1, height: Mnist.Rows, width: Mnist.Columns);
     if (pixels.Average() > 0.5f)
         for (int i = 0; i < pixels.Length; i++)
             pixels[i] = 1f - pixels[i];
@@ -114,26 +130,6 @@ void Predict(Options o)
     Console.WriteLine($"Predicted digit: {answer.Class} ({answer.Probability:P1})");
     foreach (var score in answer.Scores.Take(3))
         Console.WriteLine($"  {score.Class}: {score.Score:P1}");
-}
-
-Dataset ToDataset(Mnist.Split split, int? limit)
-{
-    int count = Math.Min(limit ?? split.Count, split.Count);
-    var images = split.Images;
-    if (count < split.Count)
-    {
-        images = new float[count, Mnist.Pixels];
-        Buffer.BlockCopy(split.Images, 0, images, 0, count * Mnist.Pixels * sizeof(float));
-    }
-    return Dataset.FromClassLabels(images, split.Labels.AsSpan(0, count), digitNames.Length, digitNames)
-        .WithFeatureShape(1, Mnist.Rows, Mnist.Columns);
-}
-
-static float[] Row(float[,] images, int index)
-{
-    var row = new float[Mnist.Pixels];
-    Buffer.BlockCopy(images, index * Mnist.Pixels * sizeof(float), row, 0, Mnist.Pixels * sizeof(float));
-    return row;
 }
 
 static void PrintDigit(ReadOnlySpan<float> pixels)
@@ -151,26 +147,30 @@ static void PrintDigit(ReadOnlySpan<float> pixels)
     }
 }
 
-void PrintConfusion(int[,] confusion)
+static void PrintConfusion(int[] labels, int[] predicted)
 {
-    int correct = 0, total = 0;
+    var digits = Mnist.Digits;
+    var confusion = new int[digits.Length, digits.Length];
+    for (int i = 0; i < labels.Length; i++)
+        confusion[labels[i], predicted[i]]++;
+
+    int correct = 0;
     Console.WriteLine();
     Console.WriteLine("Confusion matrix (rows: true digit, columns: predicted)");
-    Console.WriteLine("      " + string.Concat(digitNames.Select(d => $"{d,6}")) + "   accuracy");
-    for (int t = 0; t < digitNames.Length; t++)
+    Console.WriteLine("      " + string.Concat(digits.Select(d => $"{d,6}")) + "   accuracy");
+    for (int t = 0; t < digits.Length; t++)
     {
         int rowTotal = 0;
-        Console.Write($"{digitNames[t],6}");
-        for (int p = 0; p < digitNames.Length; p++)
+        Console.Write($"{digits[t],6}");
+        for (int p = 0; p < digits.Length; p++)
         {
             Console.Write($"{confusion[t, p],6}");
             rowTotal += confusion[t, p];
         }
         correct += confusion[t, t];
-        total += rowTotal;
         Console.WriteLine($"   {(double)confusion[t, t] / Math.Max(rowTotal, 1):P1}");
     }
-    Console.WriteLine($"Test accuracy: {(double)correct / total:P2} ({correct:N0}/{total:N0})");
+    Console.WriteLine($"Test accuracy: {(double)correct / labels.Length:P2} ({correct:N0}/{labels.Length:N0})");
 }
 
 internal sealed record Options(
@@ -178,7 +178,7 @@ internal sealed record Options(
 {
     public static Options Parse(string[] args)
     {
-        var o = new Options("train", null, 3, 64, null, "digits.ikm", Path.Combine("data", "mnist"));
+        var o = new Options("train", null, 3, 64, null, "digits.ikm", "data");
         int i = 0;
         if (args.Length > 0 && !args[0].StartsWith("--"))
             o = o with { Command = args[i++].ToLowerInvariant() };

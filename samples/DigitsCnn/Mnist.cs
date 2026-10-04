@@ -1,64 +1,64 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
+using Idrak.Data;
 
 namespace DigitsCnn;
 
-/// <summary>Downloads the MNIST handwritten digits (once, into a cache folder) and reads its IDX files.</summary>
+/// <summary>
+/// Reads the MNIST handwritten digits that <c>dotnet idrak @mnist.rsp</c> downloaded, as Idrak datasets.
+/// </summary>
 internal static class Mnist
 {
     public const int Rows = 28;
     public const int Columns = 28;
     public const int Pixels = Rows * Columns;
 
-    private static readonly string[] Mirrors =
-    [
-        "https://ossci-datasets.s3.amazonaws.com/mnist/",
-        "https://storage.googleapis.com/cvdf-datasets/mnist/",
-    ];
+    public static readonly string[] Digits = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
-    /// <summary>Images as [count, 784] values in [0, 1] (white digit on black) and their labels 0-9.</summary>
-    public sealed record Split(float[,] Images, int[] Labels)
+    private const string TrainImages = "train-images-idx3-ubyte.gz";
+    private const string TrainLabels = "train-labels-idx1-ubyte.gz";
+    private const string TestImages = "t10k-images-idx3-ubyte.gz";
+    private const string TestLabels = "t10k-labels-idx1-ubyte.gz";
+
+    /// <summary>
+    /// The training and test sets as one-hot classification datasets of [1, 28, 28] images in [0, 1]
+    /// (a white digit on black), with each set's labels for reporting.
+    /// </summary>
+    public static (Dataset Train, Dataset Test, int[] TestLabels) Load(string dataFolder)
     {
-        public int Count => Labels.Length;
+        var folders = SearchFolders(dataFolder).ToArray();
+        return (
+            ToDataset(Find(TrainImages, folders), Find(TrainLabels, folders)),
+            ToDataset(Find(TestImages, folders), Find(TestLabels, folders)),
+            ReadLabels(Find(TestLabels, folders)));
     }
 
-    public static async Task<(Split Train, Split Test)> LoadAsync(string folder, CancellationToken ct = default)
+    private static Dataset ToDataset(string images, string labels) =>
+        Dataset.FromClassLabels(ReadImages(images), ReadLabels(labels), Digits.Length, Digits)
+            .WithFeatureShape(1, Rows, Columns);
+
+    // The sample's data folder first, then Idrak's own cache (what `idrak data download` uses without --cache).
+    private static IEnumerable<string> SearchFolders(string dataFolder)
     {
-        Directory.CreateDirectory(folder);
-        var train = new Split(
-            ReadImages(await FetchAsync(folder, "train-images-idx3-ubyte.gz", ct)),
-            ReadLabels(await FetchAsync(folder, "train-labels-idx1-ubyte.gz", ct)));
-        var test = new Split(
-            ReadImages(await FetchAsync(folder, "t10k-images-idx3-ubyte.gz", ct)),
-            ReadLabels(await FetchAsync(folder, "t10k-labels-idx1-ubyte.gz", ct)));
-        return (train, test);
+        yield return dataFolder;
+        var cache = Environment.GetEnvironmentVariable("IDRAK_CACHE");
+        yield return string.IsNullOrEmpty(cache)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "idrak")
+            : cache;
     }
 
-    private static async Task<string> FetchAsync(string folder, string file, CancellationToken ct)
+    private static string Find(string file, string[] folders)
     {
-        var path = Path.Combine(folder, file);
-        if (File.Exists(path))
-            return path;
-
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-        foreach (var mirror in Mirrors)
+        foreach (var folder in folders.Where(Directory.Exists))
         {
-            try
-            {
-                Console.WriteLine($"Downloading {mirror}{file}");
-                var bytes = await http.GetByteArrayAsync(mirror + file, ct);
-                var partial = path + ".part";
-                await File.WriteAllBytesAsync(partial, bytes, ct);
-                File.Move(partial, path, overwrite: true);
-                return path;
-            }
-            catch (HttpRequestException e)
-            {
-                Console.WriteLine($"  failed: {e.Message}");
-            }
+            var match = Directory.EnumerateFiles(folder, file, SearchOption.AllDirectories).FirstOrDefault();
+            if (match is not null)
+                return match;
         }
 
-        throw new IOException($"Could not download {file}. Place the MNIST .gz files in '{folder}' and run again.");
+        throw new FileNotFoundException(
+            $"MNIST file '{file}' not found under {string.Join(" or ", folders.Select(f => $"'{f}'"))}. " +
+            "Download the data first: dotnet tool restore && dotnet idrak @mnist.rsp (see README.md).");
     }
 
     private static byte[] Decompress(string path)
@@ -71,8 +71,7 @@ internal static class Mnist
 
     private static float[,] ReadImages(string path)
     {
-        var data = Decompress(path);
-        var span = data.AsSpan();
+        var span = Decompress(path).AsSpan();
         if (BinaryPrimitives.ReadInt32BigEndian(span) != 2051)
             throw new InvalidDataException($"{path} is not an IDX image file.");
 
@@ -92,8 +91,7 @@ internal static class Mnist
 
     private static int[] ReadLabels(string path)
     {
-        var data = Decompress(path);
-        var span = data.AsSpan();
+        var span = Decompress(path).AsSpan();
         if (BinaryPrimitives.ReadInt32BigEndian(span) != 2049)
             throw new InvalidDataException($"{path} is not an IDX label file.");
 
