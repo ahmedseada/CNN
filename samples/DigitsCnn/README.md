@@ -1,14 +1,14 @@
 # DigitsCnn
 
 A .NET 10 console app that trains a small convolutional network to recognise handwritten digits 0-9 (MNIST). It uses
-[Idrak](https://www.nuget.org/packages/Idrak) 0.2.0 and its fluent API. The data is downloaded with the Idrak CLI.
+[Idrak](https://www.nuget.org/packages/Idrak) 0.2.1 and its fluent API. The data is downloaded with the Idrak CLI.
 
 ## 1. Set up the Idrak CLI
 
 From the repository root:
 
 ```sh
-dotnet tool restore        # installs Idrak.Cli 0.2.0 from dotnet-tools.json
+dotnet tool restore        # installs Idrak.Cli 0.2.1 from dotnet-tools.json
 dotnet idrak version       # check: prints the tool, library and runtime versions
 ```
 
@@ -62,10 +62,8 @@ The app trains for up to 3 epochs, printing the loss and accuracy after each one
 lowest validation loss.
 
 The saved model always uses the weights of the best epoch (lowest validation loss), not the last epoch. If
-validation loss doesn't improve for `--patience` epochs, training stops early. Idrak's `RestoreBestWeights` restores
-the best weights only when early stopping ends the run (fixed for Idrak 0.2.1). So the app keeps its own copy of the
-best epoch's weights (`BestWeights` in [`src/CnnSamples.Shared`](../../src/CnnSamples.Shared)) and loads it after
-training, however training ended. It then prints a confusion matrix of the
+validation loss doesn't improve for `--patience` epochs, training stops early. Either way, Idrak's `RestoreBestWeights`
+(on by default) puts back the best epoch's weights at the end. The app then prints a confusion matrix of the
 10,000 test images, shows a few test digits as text drawings with their predictions, and saves the model package to
 `digits.ikm`. The package works in this app (step 4) and in the Idrak CLI (step 5).
 
@@ -130,28 +128,19 @@ dotnet idrak predict digits.ikm -i test-digits --json -d cuda:0
 ```
 file              prediction  probability
 ----------------  ----------  -----------
-test-digits/0...  7           0.999578
-test-digits/0...  2           0.998377
-test-digits/0...  1           0.998937
+00000_label7.pgm  7           0.999578
+00001_label2.pgm  2           0.998377
+00002_label1.pgm  1           0.998937
 ```
 
-Idrak CLI 0.2.0 cuts the `file` column to its first 13 characters, so every row shows the folder name. 0.2.1 shows each
-file's name instead ([ahmedseada/Idrak#1](https://github.com/ahmedseada/Idrak/pull/1)). Until then, use `-o` to see
-which file is which.
+To list what the package contains, run `dotnet idrak inspect digits.ikm`. `predictor.Save` writes three entries
+besides its `manifest.json`, and both this app (`Predictor.Load`) and `idrak predict` read all of them:
 
-To list what the package contains, run `dotnet idrak inspect digits.ikm`. Besides its `manifest.json`, the package holds four entries:
-
-| Entry | Read by | Contents |
-|-------|---------|----------|
-| `architecture/model.json` | both | The network, as the builder's JSON |
-| `weights/model.ikw` | both | The trained weights |
-| `json/predictor.json` | `Predictor.Load` (this app) | Input shape, batch size, softmax, class names |
-| `json/training.json` | `idrak predict` | Task (`classification`), class names, input shape, test accuracy |
-
-`predictor.Save` writes only the first three entries. `ModelFiles.Save` in
-[`src/CnnSamples.Shared`](../../src/CnnSamples.Shared/ModelFiles.cs) rewrites the package with Idrak's
-`ModelPackage.Create(...)` writer and adds `training.json`. Without that entry, `idrak predict`
-treats the model as a regression and prints ten raw output scores instead of a digit.
+| Entry | Contents |
+|-------|----------|
+| `architecture/model.json` | The network, as the builder's JSON |
+| `weights/model.ikw` | The trained weights |
+| `json/predictor.json` | Input shape, softmax and class names |
 
 ## How the code uses Idrak's fluent API
 
@@ -186,10 +175,8 @@ var history = new TrainingRun
     Model = model, Loss = Losses.CrossEntropy, Optimizer = p => new Adam(p, 1e-3f),
     Train = train.Batches(64, shuffle: true), Validation = test.Batches(512),
     Epochs = 3, Metrics = [Metric.Accuracy],
-    EarlyStoppingPatience = 2,                                   // stop after 2 epochs without improvement
-    OnEpoch = e => best.Track(e),     // keep the best epoch's weights (BestWeights, in the shared library)
+    EarlyStoppingPatience = 2,    // stop after 2 epochs without improvement; the best epoch's weights are kept
 }.Fit();
-best.Restore();                       // also when training ran to the last epoch
 ```
 
 **Inference**: the predictor builder turns the network's outputs into a `ClassPrediction` (the digit, its probability
@@ -197,25 +184,13 @@ and every digit's score). It also saves and reloads the model as one package:
 
 ```csharp
 using var predictor = Predictor.For(model)
-    .InputShape(1, 28, 28)
-    .BatchSize(512)          // predict large inputs (the 10,000 test images) in GPU-sized batches
+    .InputShape(1, 28, 28)   // large inputs (the 10,000 test images) go through in batches of 512
     .Softmax()
     .Classes(Digits)
     .Build();
-predictor.Save("digits.ikm");
+predictor.Save("digits.ikm");   // for this app's predict and for idrak predict
 
 var saved = Predictor.Load("digits.ikm");
 using var loaded = saved.Classes(saved.StoredClasses!).Build();
 ClassPrediction answer = loaded.Predict(pixels);
-```
-
-**Package for the CLI**: the package writer is fluent too. It adds the `training` entry that `idrak predict` reads:
-
-```csharp
-ModelPackage.Create("digits.ikm")
-    .Architecture(network)                   // the NetworkBuilder, before Build()
-    .Weights(model)
-    .Json("predictor", predictorSettings)    // kept from predictor.Save, for Predictor.Load
-    .Json("training", new JsonObject { ["task"] = "classification", ["classes"] = ..., ["inputShape"] = ... })
-    .Save();
 ```

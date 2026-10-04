@@ -79,7 +79,6 @@ void Train(SampleOptions o)
         .Linear(Emnist.Letters.Length);
     using var model = network.Build();
 
-    using var best = new BestWeights(model);
     var stopwatch = Stopwatch.StartNew();
     var history = new TrainingRun
     {
@@ -98,23 +97,20 @@ void Train(SampleOptions o)
                 $"epoch {e.Epoch}/{e.Epochs}  loss {e.Loss:F4}  acc {e.Metrics["accuracy"]:P2}  " +
                 $"val loss {e.ValidationLoss:F4}  val acc {e.ValidationMetrics!["accuracy"]:P2}  " +
                 $"lr {e.LearningRate:G3}  ({e.Duration.TotalSeconds:F1}s){(e.IsBest ? "  *" : "")}");
-            best.Track(e);
         },
     }.Fit();
-    best.Restore();
     Console.WriteLine(
-        $"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s; kept the weights of epoch {best.Epoch} " +
+        $"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s; kept the weights of epoch {history.BestEpoch} " +
         $"(val loss {history.BestLoss:F4}){(history.StoppedEarly ? ", stopped early" : "")}");
 
     using var predictor = Predictor.For(model)
         .InputShape(imageShape)
-        .BatchSize(EvaluationBatchSize)
         .Softmax()
         .Classes(Emnist.Letters)
         .Build();
 
     var predicted = predictor.Predict(test).Select(p => p.Index).ToArray();
-    double accuracy = ConsoleReport.PrintResults(testLabels, predicted, Emnist.Letters);
+    ConsoleReport.PrintResults(testLabels, predicted, Emnist.Letters);
 
     Console.WriteLine();
     Console.WriteLine("A few test letters:");
@@ -127,7 +123,7 @@ void Train(SampleOptions o)
         Console.WriteLine();
     }
 
-    ModelFiles.Save(predictor, o.ModelPath, network, model, Emnist.Letters, imageShape, accuracy);
+    predictor.Save(o.ModelPath);   // weights, architecture, input shape, softmax and classes: Predictor.Load and idrak predict read it
     Console.WriteLine($"Saved the model to {Path.GetFullPath(o.ModelPath)}");
     Console.WriteLine($"Run it with the Idrak CLI: dotnet idrak predict {o.ModelPath} -i <image or folder> --top 3");
 }
@@ -142,7 +138,7 @@ void Predict(SampleOptions o)
     var saved = Predictor.Load(o.ModelPath);   // architecture, weights, input shape, softmax and classes
     using var predictor = saved.Classes(saved.StoredClasses ?? Emnist.Letters).Build();
 
-    var pixels = ModelFiles.LoadLightOnDark(o.ImagePath, Emnist.Rows, Emnist.Columns);
+    var pixels = ImageFiles.LoadLightOnDark(o.ImagePath, Emnist.Rows, Emnist.Columns);
     ConsoleReport.PrintImage(pixels, Emnist.Rows, Emnist.Columns);
     var answer = predictor.Predict(pixels);
     Console.WriteLine($"Predicted letter: {answer.Class} ({answer.Probability:P1})");
@@ -157,7 +153,7 @@ void Export(SampleOptions o)
     Directory.CreateDirectory(o.ExportFolder);
     var picked = TestImages.OnePerClass(testLabels, Emnist.Letters.Length, o.ExportCount);
     foreach (int i in picked)
-        ModelFiles.WritePgm(Path.Combine(o.ExportFolder, $"{i:D5}_label{Emnist.Letters[testLabels[i]]}.pgm"),
+        ImageFiles.WritePgm(Path.Combine(o.ExportFolder, $"{i:D5}_label{Emnist.Letters[testLabels[i]]}.pgm"),
             test.GetFeatures(i), Emnist.Rows, Emnist.Columns);
     Console.WriteLine($"Wrote {picked.Length} test images, one of each class in turn, to {Path.GetFullPath(o.ExportFolder)}");
 }

@@ -87,7 +87,6 @@ void Train(SampleOptions o)
         Transforms = [new RandomShift(2), new RandomRotation(8)],
     };
 
-    using var best = new BestWeights(model);
     var stopwatch = Stopwatch.StartNew();
     var history = new TrainingRun
     {
@@ -106,25 +105,22 @@ void Train(SampleOptions o)
                 $"epoch {e.Epoch}/{e.Epochs}  loss {e.Loss:F4}  acc {e.Metrics["accuracy"]:P2}  " +
                 $"val loss {e.ValidationLoss:F4}  val acc {e.ValidationMetrics!["accuracy"]:P2}  " +
                 $"lr {e.LearningRate:G3}  ({e.Duration.TotalSeconds:F1}s){(e.IsBest ? "  *" : "")}");
-            best.Track(e);
         },
     }.Fit();
-    best.Restore();
     Console.WriteLine(
-        $"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s; kept the weights of epoch {best.Epoch} " +
+        $"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s; kept the weights of epoch {history.BestEpoch} " +
         $"(val loss {history.BestLoss:F4}){(history.StoppedEarly ? ", stopped early" : "")}");
 
     using var predictor = Predictor.For(model)
         .InputShape(imageShape)
-        .BatchSize(EvaluationBatchSize)
         .Softmax()
         .Classes(classes)
         .Build();
 
     var predicted = predictor.Predict(test).Select(p => p.Index).ToArray();
-    double accuracy = ConsoleReport.PrintResults(testLabels, predicted, classes);
+    ConsoleReport.PrintResults(testLabels, predicted, classes);
 
-    ModelFiles.Save(predictor, o.ModelPath, network, model, classes, imageShape, accuracy);
+    predictor.Save(o.ModelPath);   // weights, architecture, input shape, softmax and classes: Predictor.Load and idrak predict read it
     Console.WriteLine($"Saved the model to {Path.GetFullPath(o.ModelPath)}");
     Console.WriteLine("Try it: dotnet run -c Release -- demo");
 }
@@ -136,7 +132,7 @@ void Demo(SampleOptions o)
     var (_, _, testImages, testLabels, classes) = Characters.Load(o.DataFolder);
     var (pixels, width, height) = PageWriter.Write(text, testImages, testLabels, classes);
     string page = o.ExportFolder;
-    ModelFiles.WritePgm(page, pixels, height, width);
+    ImageFiles.WritePgm(page, pixels, height, width);
     Console.WriteLine($"Wrote a {width} x {height} page of handwriting to {Path.GetFullPath(page)}");
 
     var (raw, read) = ReadPage(page, o.ModelPath, show: false);

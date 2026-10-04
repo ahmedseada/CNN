@@ -77,7 +77,6 @@ void Train(SampleOptions o)
         .Linear(Mnist.Digits.Length);
     using var model = network.Build();
 
-    using var best = new BestWeights(model);
     var stopwatch = Stopwatch.StartNew();
     var history = new TrainingRun
     {
@@ -95,25 +94,22 @@ void Train(SampleOptions o)
                 $"epoch {e.Epoch}/{e.Epochs}  loss {e.Loss:F4}  acc {e.Metrics["accuracy"]:P2}  " +
                 $"val loss {e.ValidationLoss:F4}  val acc {e.ValidationMetrics!["accuracy"]:P2}  " +
                 $"({e.Duration.TotalSeconds:F1}s){(e.IsBest ? "  *" : "")}");
-            best.Track(e);
         },
     }.Fit();
-    best.Restore();
     Console.WriteLine(
-        $"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s; kept the weights of epoch {best.Epoch} " +
+        $"Trained in {stopwatch.Elapsed.TotalSeconds:F1}s; kept the weights of epoch {history.BestEpoch} " +
         $"(val loss {history.BestLoss:F4}){(history.StoppedEarly ? ", stopped early" : "")}");
 
-    // One image in, the most likely digit (with every digit's probability) out. BatchSize splits large inputs
-    // (the 10,000 test images below) into GPU-sized batches; one 10,000-image batch fails to launch on CUDA in 0.2.0.
+    // One image in, the most likely digit (with every digit's probability) out. Large inputs (the 10,000 test images
+    // below) are predicted in batches of Predictor.DefaultBatchSize (512).
     using var predictor = Predictor.For(model)
         .InputShape(imageShape)
-        .BatchSize(EvaluationBatchSize)
         .Softmax()
         .Classes(Mnist.Digits)
         .Build();
 
     var predicted = predictor.Predict(test).Select(p => p.Index).ToArray();
-    double accuracy = ConsoleReport.PrintResults(testLabels, predicted, Mnist.Digits);
+    ConsoleReport.PrintResults(testLabels, predicted, Mnist.Digits);
 
     Console.WriteLine();
     Console.WriteLine("A few test digits:");
@@ -126,7 +122,7 @@ void Train(SampleOptions o)
         Console.WriteLine();
     }
 
-    ModelFiles.Save(predictor, o.ModelPath, network, model, Mnist.Digits, imageShape, accuracy);
+    predictor.Save(o.ModelPath);   // weights, architecture, input shape, softmax and classes: Predictor.Load and idrak predict read it
     Console.WriteLine($"Saved the model to {Path.GetFullPath(o.ModelPath)}");
     Console.WriteLine($"Run it with the Idrak CLI: dotnet idrak predict {o.ModelPath} -i <image or folder> --top 3");
 }
@@ -141,7 +137,7 @@ void Predict(SampleOptions o)
     var saved = Predictor.Load(o.ModelPath);   // architecture, weights, input shape, softmax and classes
     using var predictor = saved.Classes(saved.StoredClasses ?? Mnist.Digits).Build();
 
-    var pixels = ModelFiles.LoadLightOnDark(o.ImagePath, Mnist.Rows, Mnist.Columns);
+    var pixels = ImageFiles.LoadLightOnDark(o.ImagePath, Mnist.Rows, Mnist.Columns);
     ConsoleReport.PrintImage(pixels, Mnist.Rows, Mnist.Columns);
     var answer = predictor.Predict(pixels);
     Console.WriteLine($"Predicted digit: {answer.Class} ({answer.Probability:P1})");
@@ -156,6 +152,6 @@ void Export(SampleOptions o)
     Directory.CreateDirectory(o.ExportFolder);
     var picked = TestImages.OnePerClass(testLabels, Mnist.Digits.Length, o.ExportCount);
     foreach (int i in picked)
-        ModelFiles.WritePgm(Path.Combine(o.ExportFolder, $"{i:D5}_label{testLabels[i]}.pgm"), test.GetFeatures(i), Mnist.Rows, Mnist.Columns);
+        ImageFiles.WritePgm(Path.Combine(o.ExportFolder, $"{i:D5}_label{testLabels[i]}.pgm"), test.GetFeatures(i), Mnist.Rows, Mnist.Columns);
     Console.WriteLine($"Wrote {picked.Length} test images, one of each class in turn, to {Path.GetFullPath(o.ExportFolder)}");
 }

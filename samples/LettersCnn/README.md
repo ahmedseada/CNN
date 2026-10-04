@@ -1,7 +1,7 @@
 # LettersCnn
 
 A .NET 10 console app that trains a convolutional network to recognise handwritten English letters A-Z (the EMNIST
-Letters dataset). It uses [Idrak](https://www.nuget.org/packages/Idrak) 0.2.0 and its fluent API. The data is
+Letters dataset). It uses [Idrak](https://www.nuget.org/packages/Idrak) 0.2.1 and its fluent API. The data is
 downloaded with the Idrak CLI.
 
 EMNIST Letters has 26 classes. Each class holds both cases of a letter, so `A` means "A or a". Some letters look alike
@@ -12,7 +12,7 @@ in handwriting, so expect more mistakes between pairs like I/L, G/Q and U/V than
 From the repository root:
 
 ```sh
-dotnet tool restore        # installs Idrak.Cli 0.2.0 from dotnet-tools.json
+dotnet tool restore        # installs Idrak.Cli 0.2.1 from dotnet-tools.json
 dotnet idrak version       # check: prints the tool, library and runtime versions
 ```
 
@@ -112,10 +112,6 @@ The files are named `<index>_label<letter>.pgm`, where `<index>` is the image's 
 shows the correct answer. EMNIST's test set is sorted by letter (the first 800 images are all A), so the app picks
 one image of each letter in turn instead of the first 26.
 
-Idrak CLI 0.2.0 cuts the table's `file` column to its first 13 characters, so every row shows `test-letters\...`.
-0.2.1 shows each file's name instead ([ahmedseada/Idrak#1](https://github.com/ahmedseada/Idrak/pull/1)). Until then,
-`-o predictions.csv` lists the full names.
-
 ## How the code uses Idrak
 
 **Network** ([`Program.cs`](Program.cs)): two blocks of two convolutions, each followed by batch normalization, then a
@@ -145,9 +141,7 @@ var history = new TrainingRun
     Scheduler = optimizer => new CosineAnnealing(optimizer, totalEpochs: 8, minLearningRate: 1e-5f, warmupEpochs: 1),
     Train = train.Batches(128, shuffle: true, seed: 1), Validation = test.Batches(512),
     Epochs = 8, Metrics = [Metric.Accuracy], EarlyStoppingPatience = 3,
-    OnEpoch = e => best.Track(e),
-}.Fit();
-best.Restore();
+}.Fit();   // the best epoch's weights are kept, whether early stopping ended the run or not
 ```
 
 **Data** ([`Emnist.cs`](Emnist.cs)): the entries are read from the zip with `System.IO.Compression`. The shared IDX
@@ -157,5 +151,5 @@ reader transposes the images, and labels 1-26 become class indices 0-25:
 Dataset.FromClassLabels(images, labels, 26, Letters).WithFeatureShape(1, 28, 28);
 ```
 
-The predictor, the CLI-compatible package and the console output are the same as DigitsCnn's. They live in
+The predictor, the saved package and the console output are the same as DigitsCnn's. They live in
 [`src/CnnSamples.Shared`](../../src/CnnSamples.Shared/README.md).

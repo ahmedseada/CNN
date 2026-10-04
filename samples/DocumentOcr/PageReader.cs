@@ -1,3 +1,5 @@
+using Idrak.Data;
+
 namespace DocumentOcr;
 
 /// <summary>One character found on a page: its line, its place on the page, and its 28 x 28 image for the model.</summary>
@@ -139,7 +141,7 @@ internal static class PageReader
         return result;
     }
 
-    // The character centred in a square, kept to its aspect ratio, a pixel from the edge, averaged down to 28 x 28.
+    // The character centred in a square, kept to its aspect ratio, a pixel from the edge, shrunk to 28 x 28.
     private static float[] Normalize(float[] ink, bool[] mask, int pageWidth, int left, int top, int width, int height)
     {
         int side = Math.Max(width, height);
@@ -153,33 +155,8 @@ internal static class PageReader
                 square[(offsetY + y) * frame + offsetX + x] = mask[i] ? ink[i] : 0f;
             }
 
-        var image = AreaResize(square, frame, Size);
+        var image = new ImageData(square, 1, frame, frame).Resize(1, Size, Size);   // averages the pixels it shrinks
         float max = image.Max();
         return max > 0 ? [.. image.Select(v => v / max)] : image;   // full contrast, like EMNIST's
-    }
-
-    // Each output pixel is the mean of the input pixels it covers: no thin stroke is skipped when shrinking.
-    private static float[] AreaResize(float[] source, int from, int to)
-    {
-        var result = new float[to * to];
-        double scale = from / (double)to;
-        for (int y = 0; y < to; y++)
-            for (int x = 0; x < to; x++)
-            {
-                double y0 = y * scale, y1 = (y + 1) * scale, x0 = x * scale, x1 = (x + 1) * scale;
-                double sum = 0, area = 0;
-                for (int sy = (int)y0; sy < Math.Min(from, (int)Math.Ceiling(y1)); sy++)
-                {
-                    double wy = Math.Min(y1, sy + 1) - Math.Max(y0, sy);
-                    for (int sx = (int)x0; sx < Math.Min(from, (int)Math.Ceiling(x1)); sx++)
-                    {
-                        double w = wy * (Math.Min(x1, sx + 1) - Math.Max(x0, sx));
-                        sum += w * source[sy * from + sx];
-                        area += w;
-                    }
-                }
-                result[y * to + x] = area > 0 ? (float)(sum / area) : 0f;
-            }
-        return result;
     }
 }

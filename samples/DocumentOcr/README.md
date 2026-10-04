@@ -1,7 +1,7 @@
 # DocumentOcr
 
 A .NET 10 console app that reads the text of a page of handwritten characters (optical character recognition). It
-uses [Idrak](https://www.nuget.org/packages/Idrak) 0.2.0 and its fluent API. A convolutional network recognises each
+uses [Idrak](https://www.nuget.org/packages/Idrak) 0.2.1 and its fluent API. A convolutional network recognises each
 character, and a page reader written in C# finds the lines and characters and assembles the text.
 
 How it works:
@@ -29,7 +29,7 @@ can't read joined-up (cursive) handwriting; that needs a model that reads whole 
 From the repository root:
 
 ```sh
-dotnet tool restore        # installs Idrak.Cli 0.2.0 from dotnet-tools.json
+dotnet tool restore        # installs Idrak.Cli 0.2.1 from dotnet-tools.json
 ```
 
 ## 2. Download EMNIST
@@ -147,9 +147,6 @@ For the best results:
   `BatchNorm`, `AdamW`, `CosineAnnealing`, label smoothing).
 - **Inference**: `Predictor.Load(...).Classes(...).Build()`, then one `Predict(list)` call for every character on the
   page. `ClassPrediction.Scores` gives the alternatives that word context chooses from.
-- **Images**: `ImageCodecs.Decode` reads the page at full size; `ImageData.Resize(1, height, width)` turns colour into
-  grey.
-
-The page reader shrinks each character with its own area averaging rather than `ImageData.Resize`. In Idrak 0.2.0,
-`Resize` shrinks by bilinear sampling, which can step over thin strokes. That's fixed for 0.2.1
-([ahmedseada/Idrak#1](https://github.com/ahmedseada/Idrak/pull/1)).
+- **Images**: `ImageCodecs.Decode` reads the page at full size, `ImageData.Resize(1, height, width)` turns colour into
+  grey, and `ImageData.Resize(1, 28, 28)` shrinks each character. Since Idrak 0.2.1 it averages the pixels it shrinks,
+  so thin pen strokes survive (0.2.0 sampled single points and could step over them).
