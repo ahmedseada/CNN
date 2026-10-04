@@ -21,4 +21,5 @@ Thumbs.db
 
 # Sample data and trained models
 samples/**/data/
+samples/**/test-digits/
 *.ikm

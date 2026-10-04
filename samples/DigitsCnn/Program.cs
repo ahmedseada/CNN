@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json.Nodes;
 using DigitsCnn;
 using Idrak;
 using Idrak.Data;
@@ -13,6 +14,7 @@ using Idrak.Training;
 //   dotnet idrak @mnist.rsp                       download MNIST with the Idrak CLI (once)
 //   dotnet run -- train   [--epochs 3] [--batch 64] [--train-samples 60000] [--model digits.ikm] [--data data]
 //   dotnet run -- predict <image.png|bmp|pgm> [--model digits.ikm]
+//   dotnet run -- export  [--count 20] [--out test-digits]   test images as PGM files, e.g. for `idrak predict`
 
 Options options;
 try
@@ -36,8 +38,11 @@ try
         case "predict":
             Predict(options);
             break;
+        case "export":
+            Export(options);
+            break;
         default:
-            Console.Error.WriteLine($"Unknown command '{options.Command}'. Use 'train' or 'predict <image>'.");
+            Console.Error.WriteLine($"Unknown command '{options.Command}'. Use 'train', 'predict <image>' or 'export'.");
             return 1;
     }
 }
@@ -58,14 +63,14 @@ static void Train(Options o)
     Console.WriteLine($"MNIST: {train.Count:N0} training and {test.Count:N0} test images");
 
     // Two convolution blocks, then a small classifier head with one logit per digit.
-    using var model = Network.Image(channels: 1, height: Mnist.Rows, width: Mnist.Columns)
+    var network = Network.Image(channels: 1, height: Mnist.Rows, width: Mnist.Columns)
         .Seed(1)
         .Conv2d(32, kernelSize: 3, padding: 1).ReLU().MaxPool2d(2)    // 32 x 14 x 14
         .Conv2d(64, kernelSize: 3, padding: 1).ReLU().MaxPool2d(2)    // 64 x 7 x 7
         .Flatten()
         .Linear(128).ReLU().Dropout(0.25f)
-        .Linear(Mnist.Digits.Length)
-        .Build();
+        .Linear(Mnist.Digits.Length);
+    using var model = network.Build();
 
     var stopwatch = Stopwatch.StartNew();
     var history = new TrainingRun
@@ -92,8 +97,9 @@ static void Train(Options o)
         .Classes(Mnist.Digits)
         .Build();
 
-    var predictions = predictor.Predict(test);
-    PrintConfusion(testLabels, predictions.Select(p => p.Index).ToArray());
+    var predicted = predictor.Predict(test).Select(p => p.Index).ToArray();
+    double testAccuracy = predicted.Where((digit, i) => digit == testLabels[i]).Count() / (double)testLabels.Length;
+    PrintConfusion(testLabels, predicted);
 
     Console.WriteLine();
     Console.WriteLine("A few test digits:");
@@ -107,7 +113,35 @@ static void Train(Options o)
     }
 
     predictor.Save(o.ModelPath);
+    AddCliSettings(o.ModelPath, network, model, testAccuracy);
     Console.WriteLine($"Saved the model to {Path.GetFullPath(o.ModelPath)}");
+    Console.WriteLine($"Run it with the Idrak CLI: dotnet idrak predict {o.ModelPath} -i <image or folder> --top 3");
+}
+
+// predictor.Save writes the "predictor" entry that Predictor.Load reads. `idrak predict` reads a "training"
+// entry instead (the one `idrak train` writes): the task, the class names and the image shape. Rewrite the
+// package with both so the same digits.ikm works in this app and in the CLI.
+static void AddCliSettings(string path, NetworkBuilder network, Module model, double testAccuracy)
+{
+    JsonNode predictorSettings;
+    using (var saved = ModelPackage.Open(path))
+        predictorSettings = saved.Json("predictor").DeepClone();
+
+    ModelPackage.Create(path)
+        .Architecture(network)
+        .Weights(model)
+        .Json("predictor", predictorSettings)
+        .Json("training", new JsonObject
+        {
+            ["format"] = "idrak-train/1",
+            ["task"] = "classification",
+            ["input"] = "images",
+            ["targets"] = new JsonArray("digit"),
+            ["classes"] = new JsonArray([.. Mnist.Digits.Select(d => JsonValue.Create(d))]),
+            ["inputShape"] = new JsonArray(1, Mnist.Rows, Mnist.Columns),
+            ["metrics"] = new JsonObject { ["accuracy"] = testAccuracy },
+        })
+        .Save();
 }
 
 static void Predict(Options o)
@@ -134,6 +168,23 @@ static void Predict(Options o)
     Console.WriteLine($"Predicted digit: {answer.Class} ({answer.Probability:P1})");
     foreach (var score in answer.Scores.Take(3))
         Console.WriteLine($"  {score.Class}: {score.Score:P1}");
+}
+
+// Writes the first test images as 28 x 28 greyscale PGM files named <index>_label<digit>.pgm.
+static void Export(Options o)
+{
+    var (_, test, testLabels) = Mnist.Load(o.DataFolder);
+    Directory.CreateDirectory(o.ExportFolder);
+    int count = Math.Min(o.ExportCount, test.Count);
+    for (int i = 0; i < count; i++)
+    {
+        var pixels = test.GetFeatures(i);
+        using var file = File.Create(Path.Combine(o.ExportFolder, $"{i:D5}_label{testLabels[i]}.pgm"));
+        file.Write(System.Text.Encoding.ASCII.GetBytes($"P5\n{Mnist.Columns} {Mnist.Rows}\n255\n"));
+        foreach (var v in pixels)
+            file.WriteByte((byte)MathF.Round(v * 255f));
+    }
+    Console.WriteLine($"Wrote {count} test images to {Path.GetFullPath(o.ExportFolder)}");
 }
 
 static void PrintDigit(ReadOnlySpan<float> pixels)
@@ -178,11 +229,12 @@ static void PrintConfusion(int[] labels, int[] predicted)
 }
 
 internal sealed record Options(
-    string Command, string? ImagePath, int Epochs, int BatchSize, int? TrainSamples, string ModelPath, string DataFolder)
+    string Command, string? ImagePath, int Epochs, int BatchSize, int? TrainSamples, string ModelPath, string DataFolder,
+    int ExportCount, string ExportFolder)
 {
     public static Options Parse(string[] args)
     {
-        var o = new Options("train", null, 3, 64, null, "digits.ikm", "data");
+        var o = new Options("train", null, 3, 64, null, "digits.ikm", "data", 20, "test-digits");
         int i = 0;
         if (args.Length > 0 && !args[0].StartsWith("--"))
             o = o with { Command = args[i++].ToLowerInvariant() };
@@ -199,6 +251,8 @@ internal sealed record Options(
                 "--train-samples" => o with { TrainSamples = int.Parse(Value()) },
                 "--model" => o with { ModelPath = Value() },
                 "--data" => o with { DataFolder = Value() },
+                "--count" => o with { ExportCount = int.Parse(Value()) },
+                "--out" => o with { ExportFolder = Value() },
                 _ => throw new ArgumentException($"Unknown option {args[i]}."),
             };
         }

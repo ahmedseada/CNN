@@ -36,6 +36,8 @@ dotnet build CnnSamples.slnx
 cd samples/DigitsCnn
 dotnet idrak @mnist.rsp      # download MNIST with the Idrak CLI
 dotnet run -c Release -- train
+dotnet run -c Release -- export              # some test images
+dotnet idrak predict digits.ikm -i test-digits --top 3   # inference with the Idrak CLI
 ```
 
 To install the CLI for every folder instead of this repository only, run `dotnet tool install -g Idrak.Cli --version
@@ -52,4 +54,5 @@ To install the CLI for every folder instead of this repository only, run `dotnet
 | `src/`                | Shared libraries (empty for now)                            |
 | `tests/`              | Tests (empty for now)                                       |
 
-Downloaded datasets (`samples/*/data/`) and trained models (`*.ikm`) are git-ignored.
+Downloaded datasets (`samples/*/data/`), exported test images (`samples/*/test-digits/`) and trained models
+(`*.ikm`) are git-ignored.

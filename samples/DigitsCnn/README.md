@@ -60,7 +60,7 @@ dotnet run -c Release -- train
 
 The app trains for 3 epochs, printing the loss and accuracy after each one. It then prints a confusion matrix of the
 10,000 test images, shows a few test digits as text drawings with their predictions, and saves the model package to
-`digits.ikm`.
+`digits.ikm`. The package works in this app (step 4) and in the Idrak CLI (step 5).
 
 | Option             | Default      | Meaning                                         |
 |--------------------|--------------|-------------------------------------------------|
@@ -88,12 +88,54 @@ The app accepts PNG, BMP, PGM and PPM files. It converts the image to greyscale 
 digit is dark on a light background, the app inverts it to match MNIST's white-on-black style. It then prints the
 image, the predicted digit and the top three probabilities.
 
-The model package is an ordinary Idrak `.ikm` file. To list what it contains (weights, architecture, predictor
-settings), run:
+## 5. Inference with the Idrak CLI
+
+`digits.ikm` also runs without this app, in `idrak predict`. The CLI takes one image or a folder of images and
+prints each file's digit and probability.
+
+The CLI uses images exactly as given. It does not invert dark-on-light drawings, so give it MNIST-style images:
+a white digit on a black background. To get some, export test-set digits from the downloaded data:
 
 ```sh
-dotnet idrak inspect digits.ikm
+dotnet run -c Release -- export                 # 20 images to test-digits/ (--count N, --out DIR)
 ```
+
+The files are 28 x 28 PGM images named `<index>_label<digit>.pgm`, so each name shows the correct answer. Then run:
+
+```sh
+# a folder: one row per image
+dotnet idrak predict digits.ikm -i test-digits
+
+# one image, with the three most likely digits
+dotnet idrak predict digits.ikm -i test-digits/00000_label7.pgm --top 3
+
+# every row to a file (.csv, .jsonl or .json); the table above shortens long file names
+dotnet idrak predict digits.ikm -i test-digits --top 3 -o predictions.csv
+
+# machine-readable output, on a chosen device
+dotnet idrak predict digits.ikm -i test-digits --json -d cuda:0
+```
+
+```
+file              prediction  probability
+----------------  ----------  -----------
+test-digits/0...  7           0.999578
+test-digits/0...  2           0.998377
+test-digits/0...  1           0.998937
+```
+
+To list what the package contains, run `dotnet idrak inspect digits.ikm`. Besides its `manifest.json`, the package holds four entries:
+
+| Entry | Read by | Contents |
+|-------|---------|----------|
+| `architecture/model.json` | both | The network, as the builder's JSON |
+| `weights/model.ikw` | both | The trained weights |
+| `json/predictor.json` | `Predictor.Load` (this app) | Input shape, batch size, softmax, class names |
+| `json/training.json` | `idrak predict` | Task (`classification`), class names, input shape, test accuracy |
+
+`predictor.Save` writes only the first three entries. `AddCliSettings` in [`Program.cs`](Program.cs) rewrites the
+package with Idrak's `ModelPackage.Create(...)` writer and adds `training.json`. Without that entry, `idrak predict`
+treats the model as a regression and prints ten raw output scores instead of a digit.
 
 ## How the code uses Idrak's fluent API
 
@@ -145,4 +187,15 @@ predictor.Save("digits.ikm");
 var saved = Predictor.Load("digits.ikm");
 using var loaded = saved.Classes(saved.StoredClasses!).Build();
 ClassPrediction answer = loaded.Predict(pixels);
+```
+
+**Package for the CLI**: the package writer is fluent too. It adds the `training` entry that `idrak predict` reads:
+
+```csharp
+ModelPackage.Create("digits.ikm")
+    .Architecture(network)                   // the NetworkBuilder, before Build()
+    .Weights(model)
+    .Json("predictor", predictorSettings)    // kept from predictor.Save, for Predictor.Load
+    .Json("training", new JsonObject { ["task"] = "classification", ["classes"] = ..., ["inputShape"] = ... })
+    .Save();
 ```
