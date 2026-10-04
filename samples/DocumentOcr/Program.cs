@@ -155,7 +155,7 @@ void Demo(SampleOptions o)
     foreach (var (name, result) in new[] { ("character by character", raw), ("with words", read) })
     {
         int errors = Levenshtein(expected, Comparable(result));
-        Console.WriteLine($"Character error rate, {name}: {errors / (double)Math.Max(expected.Length, 1):P1} ({errors} edits over {expected.Length} characters)");
+        Console.WriteLine($"Character error rate, {name}: {errors / (double)Math.Max(expected.Length, 1):P1} ({errors} edit{(errors == 1 ? "" : "s")} over {expected.Length} characters)");
     }
 }
 
