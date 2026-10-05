@@ -179,7 +179,7 @@ take more than 15% of the photo as ink (shadows, the desk, the binding), the pag
 
 - a local threshold: a pixel is ink where it is clearly darker than its surroundings, so uneven light does not count;
 - the ruled lines of notebook paper are removed (thin strokes running far sideways), keeping the letters that cross
-  them;
+  them and the pen strokes that run along them (pen ink is darker than a printed line);
 - what lies around the page goes: regions at the photo's edge, regions far larger than writing, and regions drawn much
   thicker than the writing (a binding's loops, a cover's edge).
 
@@ -194,6 +194,11 @@ dotnet run -c Release -- ocr notebook.jpeg --crop 120,240,750,590
 an uncompressed BMP next to it (`photo.jpeg` → `photo.bmp`, reused on the next run) by the first converter available
 ([`ImageConversion.cs`](ImageConversion.cs)): Windows' own imaging on every Windows, else ImageMagick (`magick`) or
 ffmpeg. A converter of your own implements `IImageConverter` and registers with `ImageConversion.Register`.
+
+A dash (a short flat mark between words) is read as `-` without the model.
+
+On the notebook photo in this sample's history, with a model of digits trained on MNIST framed the same way, the
+number line `01345 - 16108` reads every digit.
 
 Joined handwriting is still out of reach: all Arabic words and joined English ("on", "Read") come out as one box per
 word, which a model of single characters cannot read.

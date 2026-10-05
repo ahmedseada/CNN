@@ -41,7 +41,7 @@ internal static class PhotoPage
         var ink = LocalInk(Idrak.Vision.Foreground.Grey(image), w, h, radius: Math.Max(8, Math.Min(w, h) / 60), margin: 0.12f);
         int ruled = RemoveRuledLines(ink, w, h, run: Math.Max(40, w / 15));
         var page = new ForegroundImage(ink, w, h, threshold: 0.05f, inverted: true);
-        int surroundings = RemoveSurroundings(page, ink);
+        int surroundings = RemoveSurroundings(page, ink, edges: crop is null);
         return (page, new Report(true, globalInk, Share(ink, 0.05f), ruled, surroundings));
     }
 
@@ -54,7 +54,7 @@ internal static class PhotoPage
             : throw new ArgumentException($"--crop takes x,y,width,height in pixels (e.g. 120,240,750,590), not '{text}'.");
     }
 
-    // Ink in [0, 1] where a pixel is darker than the mean of the (2r + 1)² window around it by more than `margin`
+    // Ink where a pixel is darker than the mean of the (2r + 1)² window around it by more than `margin`
     // (Bradley's local threshold, the window sums from an integral image); 0 elsewhere.
     private static float[] LocalInk(float[] grey, int w, int h, int radius, float margin)
     {
@@ -79,13 +79,13 @@ internal static class PhotoPage
                 double mean = (sum[y1 * (w + 1) + x1] - sum[y0 * (w + 1) + x1] - sum[y1 * (w + 1) + x0] + sum[y0 * (w + 1) + x0])
                     / ((x1 - x0) * (y1 - y0));
                 float darker = (float)(mean - grey[y * w + x]);
-                ink[y * w + x] = darker > margin ? Math.Min(1f, darker * 4) : 0f;
+                ink[y * w + x] = darker > margin ? darker : 0f;   // how much darker: pen ink more than a printed line
             }
         }
         return ink;
     }
 
-    // Ruled lines: thin strokes that run far sideways. A pixel is on one where ink continues sideways for `run` pixels
+    // Ruled lines: thin, faint strokes that run far sideways. A pixel is on one where ink continues sideways for `run` pixels
     // through it (a pixel up or down per step, for lines photographed at a slant) and is at most 4 pixels thick there,
     // so the strokes of letters crossing a line keep their ink above and below it.
     private static int RemoveRuledLines(float[] ink, int w, int h, int run)
@@ -119,16 +119,23 @@ internal static class PhotoPage
                 if (up + down + 1 <= 4)
                     ruled.Add(y * w + x);
             }
+        // A pen stroke running along a ruled line stays: pen ink is darker than the printed line, so a pixel on a line
+        // well darker than the line's own median (most of what was found is the line) is kept. On the notebook photo this
+        // keeps the 5's bar and the 3's lower curve, which the line erased, and every digit of its number line reads.
+        var lineInk = ruled.Select(i => ink[i]).Order().ToArray();
+        float keep = lineInk.Length > 0 ? 1.9f * lineInk[lineInk.Length / 2] : float.MaxValue;
         foreach (int i in ruled)
-            ink[i] = 0;
+            if (ink[i] < keep)
+                ink[i] = 0;
         return ruled.Count;
     }
 
-    // What lies around the page: regions at the photo's edge (within 1.5%), regions far larger than writing (a page edge, a
-    // shadow), and regions drawn much thicker than the writing (a notebook's binding, a cover's edge). A region's
+    // What lies around the page: regions at the photo's edge (within 1.5%; not in a crop, whose edges the reader chose),
+    // regions far larger than writing (a page edge, a shadow: past a quarter of the photo and several times the writing's
+    // height), and regions drawn much thicker than the writing (a notebook's binding, a cover's edge). A region's
     // stroke is about 2 · area / perimeter thick; the writing's is the median stroke over the regions (pieces of
     // writing far outnumber the binding's loops, though these hold more ink). Returns how many regions were removed.
-    private static int RemoveSurroundings(ForegroundImage page, float[] ink)
+    private static int RemoveSurroundings(ForegroundImage page, float[] ink, bool edges)
     {
         int w = page.Width, h = page.Height;
         var map = ConnectedComponents.Find(page, Connectivity.Eight);
@@ -144,16 +151,19 @@ internal static class PhotoPage
             }
 
         double Thickness(Region r) => 2.0 * r.Area / Math.Max(perimeter[r.Label], 1);
-        var strokes = map.Regions.Where(r => r.Area >= 20).Select(Thickness).Order().ToArray();
+        var pieces = map.Regions.Where(r => r.Area >= 20).ToArray();
+        var strokes = pieces.Select(Thickness).Order().ToArray();
         double writing = strokes.Length > 0 ? strokes[strokes.Length / 2] : 0;
+        var heights = pieces.Select(r => r.Box.Height).Order().ToArray();
+        int height = heights.Length > 0 ? heights[heights.Length / 2] : h;      // the writing's typical height
 
         var drop = new HashSet<int>();
         foreach (var r in map.Regions)
         {
             var b = r.Box;
             int mx = Math.Max(1, w * 3 / 200), my = Math.Max(1, h * 3 / 200);     // within 1.5% of the edge
-            bool edge = b.X < mx || b.Y < my || b.Right > w - mx || b.Bottom > h - my;
-            bool large = b.Width > w / 2 || b.Height > h / 4;
+            bool edge = edges && (b.X < mx || b.Y < my || b.Right > w - mx || b.Bottom > h - my);
+            bool large = b.Width > Math.Max(w / 2, 12 * height) || b.Height > Math.Max(h / 4, 4 * height);
             bool thick = writing > 0 && r.Area >= 20 && Thickness(r) > 1.6 * writing;
             if (edge || large || thick)
                 drop.Add(r.Label);

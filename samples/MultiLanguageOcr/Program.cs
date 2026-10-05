@@ -263,19 +263,24 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
     foreach (var line in Enumerable.Range(0, glyphs.Count).GroupBy(i => glyphs[i].Line))
     {
         var indices = line.ToList();
+        // A dash (a short flat mark, no character of the model) is its own word, read without the model.
+        var heights = indices.Select(i => glyphs[i].Box.Height).Order().ToArray();
+        int typical = heights[heights.Length / 2];
+        bool Dash(int i) => glyphs[i].Box.Height * 4 <= typical && glyphs[i].Box.Width >= 2 * glyphs[i].Box.Height;
+
         // The line's script: the one most of its probability is on.
         var script = Enum.GetValues<Script>().MaxBy(s =>
-            indices.Sum(i => answers[i].Where(c => byText[c.Class].Script == s).Sum(c => c.Score)));
+            indices.Where(i => !Dash(i)).Sum(i => answers[i].Where(c => byText[c.Class].Script == s).Sum(c => c.Score)));
 
         var words = new List<List<int>>();
         foreach (int i in indices)
         {
-            if (words.Count == 0 || glyphs[i].SpaceBefore)
+            if (words.Count == 0 || glyphs[i].SpaceBefore || Dash(i) || Dash(words[^1][^1]))
                 words.Add([]);
             words[^1].Add(i);
         }
 
-        var visual = words.Select(w => Words.InContext([.. w.Select(i => answers[i])], script, byText)).ToList();
+        var visual = words.Select(w => Dash(w[0]) ? "-" : Words.InContext([.. w.Select(i => answers[i])], script, byText)).ToList();
         lines.Add((script, TextOrder.Logical(visual, rightToLeft: script == Script.Arabic)));
 
         if (show)
