@@ -14,6 +14,7 @@
     <Project Path="samples/DigitsCnn/DigitsCnn.csproj" />
     <Project Path="samples/DocumentOcr/DocumentOcr.csproj" />
     <Project Path="samples/LettersCnn/LettersCnn.csproj" />
+    <Project Path="samples/MultiLanguageOcr/MultiLanguageOcr.csproj" />
   </Folder>
   <Folder Name="/tests/" />
 </Solution>

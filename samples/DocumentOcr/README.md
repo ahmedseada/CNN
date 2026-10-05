@@ -1,7 +1,7 @@
 # DocumentOcr
 
 A .NET 10 console app that reads the text of a page of handwritten characters (optical character recognition). It
-uses [Idrak](https://www.nuget.org/packages/Idrak) 0.2.1 and its fluent API. A convolutional network recognises each
+uses [Idrak](https://www.nuget.org/packages/Idrak) 0.3.0 and its fluent API. A convolutional network recognises each
 character, and a page reader written in C# finds the lines and characters and assembles the text.
 
 How it works:
@@ -29,7 +29,7 @@ can't read joined-up (cursive) handwriting; that needs a model that reads whole 
 From the repository root:
 
 ```sh
-dotnet tool restore        # installs Idrak.Cli 0.2.1 from dotnet-tools.json
+dotnet tool restore        # installs Idrak.Cli 0.3.0 from dotnet-tools.json
 ```
 
 ## 2. Download EMNIST
