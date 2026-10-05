@@ -22,6 +22,14 @@ into, and each measured for memory and speed before it moves:
 - **Region measures**: perimeter (and stroke thickness, `2 · area / perimeter`) per region from the labelling pass of
   `ConnectedComponents.Find`.
 - **Image converters**: an `IImageConverter` registry beside `ImageCodecs`, which `Decode` falls back to.
+- **Speed and memory of a page** (measured on an RTX 5050 laptop, 1188 x 1280 photo, 75 characters, warm: about
+  100 ms a page, of which the model is 7 ms): `Foreground` and the local threshold parallel over rows and vectorized,
+  into the `ForegroundImage` buffer (photo ink about 100 ms today); `RegionClassifier` framing regions in parallel
+  into its batch buffer (4-10 ms on one thread today), a warm-up at load (the first classify is 43 ms against 11 ms
+  warm) and the top classes without sorting all of them; `ImageCodecs.Decode(path, channels: 1)` straight to grey
+  (a 1188 x 1280 page is 18 MB as float RGB, 1.5 MB as grey bytes); pooled per-page buffers (grey, ink, integral
+  image, label map) reused across stages and pages; and the device's memory pool reported and trimmable (245 MB
+  cached for 8 MB in use after one page).
 
 Later: a pure C# JPEG codec (baseline and progressive, no external program, no temporary file), the CTC loss and
 decoding for reading whole lines (0.4.0), and a .NET metrics and activities bridge for `dotnet-counters` and
