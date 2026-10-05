@@ -1,7 +1,7 @@
 # LettersCnn
 
 A .NET 10 console app that trains a convolutional network to recognise handwritten English letters A-Z (the EMNIST
-Letters dataset). It uses [Idrak](https://www.nuget.org/packages/Idrak) 0.2.1 and its fluent API. The data is
+Letters dataset). It uses [Idrak](https://www.nuget.org/packages/Idrak) 0.3.0 and its fluent API. The data is
 downloaded with the Idrak CLI.
 
 EMNIST Letters has 26 classes. Each class holds both cases of a letter, so `A` means "A or a". Some letters look alike
@@ -12,7 +12,7 @@ in handwriting, so expect more mistakes between pairs like I/L, G/Q and U/V than
 From the repository root:
 
 ```sh
-dotnet tool restore        # installs Idrak.Cli 0.2.1 from dotnet-tools.json
+dotnet tool restore        # installs Idrak.Cli 0.3.0 from dotnet-tools.json
 dotnet idrak version       # check: prints the tool, library and runtime versions
 ```
 

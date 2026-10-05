@@ -1,7 +1,7 @@
 # MultiLanguageOcr
 
 A .NET 10 console app that reads pages of handwritten characters in **English and Arabic**. It uses
-[Idrak](https://www.nuget.org/packages/Idrak) 0.2.1 and its fluent API. It builds on [DocumentOcr](../DocumentOcr/README.md),
+[Idrak](https://www.nuget.org/packages/Idrak) 0.3.0 and its fluent API. It builds on [DocumentOcr](../DocumentOcr/README.md),
 which reads English only.
 
 How it works:
@@ -42,7 +42,7 @@ Letters outside AHCD's 28 aren't known either: `ة`, `ى`, `ء` and alef with ha
 From the repository root:
 
 ```sh
-dotnet tool restore        # installs Idrak.Cli 0.2.1 from dotnet-tools.json
+dotnet tool restore        # installs Idrak.Cli 0.3.0 from dotnet-tools.json
 ```
 
 ## 2. Download the data

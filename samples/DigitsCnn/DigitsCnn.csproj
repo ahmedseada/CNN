@@ -6,7 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Idrak" Version="0.2.1" />
+    <PackageReference Include="Idrak" Version="0.3.0" />
     <ProjectReference Include="..\..\src\CnnSamples.Shared\CnnSamples.Shared.csproj" />
   </ItemGroup>
 
