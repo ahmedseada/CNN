@@ -6,14 +6,35 @@ it) becomes a library abstraction, with an interface the application can plug it
 specific to one application stays in that application. Every piece that moves keeps memory (RAM and VRAM) and speed
 in mind: no buffer more than it needs, reuse over allocation, work that can run on the device runs there.
 
+## Planned for 0.3.2
+
+Abstractions taken from the tables below, each with an interface the application can plug its own implementation
+into, and each measured for memory and speed before it moves:
+
+- **Telemetry for whole pipelines**: `Telemetry.Stage(name)` (a disposable scope publishing `StageCompleted` under a
+  new `TelemetryLevel.Stages`) for applications and the library alike; stage events from `Idrak.Vision`
+  (`Foreground.Extract`, `ConnectedComponents.Find`, the framing in `RegionClassifier`, `ModelDetector`,
+  `ModelSegmenter`), from model loading (`Predictor.Load`, `RegionClassifier.Load`, `ModelPackage`) and from
+  `ImageCodecs.Decode`; `MemoryUsage.Peak` with a reset and the device's memory on `InferenceCompleted`; a `First`
+  flag (or a kernel-compilation event) on the first inference; the model's package name on its events.
+- **Foreground thresholds**: `IForegroundThreshold` taken by `Foreground.Extract` (global Otsu, a given level,
+  Bradley's local window; Sauvola next), writing into the `ForegroundImage` buffer, parallel over rows.
+- **Region measures**: perimeter (and stroke thickness, `2 · area / perimeter`) per region from the labelling pass of
+  `ConnectedComponents.Find`.
+- **Image converters**: an `IImageConverter` registry beside `ImageCodecs`, which `Decode` falls back to.
+
+Later: a pure C# JPEG codec (baseline and progressive, no external program, no temporary file), the CTC loss and
+decoding for reading whole lines (0.4.0), and a .NET metrics and activities bridge for `dotnet-counters` and
+OpenTelemetry (an optional package).
+
 ## Open
 
-| Piece | Built in | Why it is general | Library shape | Memory and speed |
-|-------|----------|-------------------|---------------|------------------|
-| Local (adaptive) threshold | MultiLanguageOcr `PhotoPage.LocalInk` | Uneven light and shadows in any photographed image: documents, microscopy, inspection, plates | An `IForegroundThreshold` (global Otsu, given level, local window) taken by `Foreground.Extract`; Bradley's mean window first, Sauvola (mean and deviation) next | Today one float per pixel for grey, a double per pixel for the integral image, a float per pixel for the result (899 x 1599: 5.7 + 11.5 + 5.7 MB). In the library: write into the `ForegroundImage` buffer, the integral image in rows of doubles reused per call (or float sums of 64-pixel tiles), parallel over rows; a device kernel for large images |
-| Image conversion to a readable format | MultiLanguageOcr `ImageConversion` (`IImageConverter`: Windows imaging, ImageMagick, ffmpeg) | Every image-reading network meets JPEG, WebP, HEIC and TIFF | An `IImageConverter` registry next to `ImageCodecs` (`ImageCodecs.Decode` falls back to it), or better a pure C# JPEG codec (baseline and progressive) registered as a codec, no external program | A converter writes a BMP once (cached next to the source); a codec decodes in memory with no file at all, straight into `ImageData` |
-| Stroke-thickness filter for regions | MultiLanguageOcr `PhotoPage.RemoveSurroundings` | Telling thin strokes (writing, wires, cracks, vessels) from thick blobs is common in vision pre-processing | Region measures in `ConnectedComponents` (perimeter, `2 · area / perimeter`), so filters need no second pass over the label map | One int per region for the perimeter, computed in the labelling pass instead of a second scan |
-| Character-sequence recognition (CTC) | Not started | Joined handwriting, printed text lines, speech: any sequence read without per-item boxes | `Losses.Ctc` (forward-backward on the device) and greedy and beam decoding | The loss over [time, classes] per sequence in log space, batched; no [time × labels] matrix on the host |
+| Piece | Built in | Why it is general | Library shape | Memory and speed | Target |
+|-------|----------|-------------------|---------------|------------------|--------|
+| Local (adaptive) threshold | MultiLanguageOcr `PhotoPage.LocalInk` | Uneven light and shadows in any photographed image: documents, microscopy, inspection, plates | An `IForegroundThreshold` (global Otsu, given level, local window) taken by `Foreground.Extract`; Bradley's mean window first, Sauvola (mean and deviation) next | Today one float per pixel for grey, a double per pixel for the integral image, a float per pixel for the result (899 x 1599: 5.7 + 11.5 + 5.7 MB). In the library: write into the `ForegroundImage` buffer, the integral image in rows of doubles reused per call (or float sums of 64-pixel tiles), parallel over rows; a device kernel for large images | 0.3.2 |
+| Image conversion to a readable format | MultiLanguageOcr `ImageConversion` (`IImageConverter`: Windows imaging, ImageMagick, ffmpeg) | Every image-reading network meets JPEG, WebP, HEIC and TIFF | An `IImageConverter` registry next to `ImageCodecs` (`ImageCodecs.Decode` falls back to it), or better a pure C# JPEG codec (baseline and progressive) registered as a codec, no external program | A converter writes a BMP once (cached next to the source); a codec decodes in memory with no file at all, straight into `ImageData` | 0.3.2 (the converter registry); the JPEG codec after |
+| Stroke-thickness filter for regions | MultiLanguageOcr `PhotoPage.RemoveSurroundings` | Telling thin strokes (writing, wires, cracks, vessels) from thick blobs is common in vision pre-processing | Region measures in `ConnectedComponents` (perimeter, `2 · area / perimeter`), so filters need no second pass over the label map | One int per region for the perimeter, computed in the labelling pass instead of a second scan | 0.3.2 |
+| Character-sequence recognition (CTC) | Not started | Joined handwriting, printed text lines, speech: any sequence read without per-item boxes | `Losses.Ctc` (forward-backward on the device) and greedy and beam decoding | The loss over [time, classes] per sequence in log space, batched; no [time × labels] matrix on the host | 0.4.0 |
 
 ## Telemetry gaps
 
@@ -21,16 +42,16 @@ Found by timing MultiLanguageOcr's `ocr` with Idrak's telemetry (`InferenceLog.c
 covered (`TelemetryLevel.Inference`, one `InferenceCompleted` per batch, timed with the device synchronized); the rest
 of a page is not, so the sample still times it with a stopwatch.
 
-| Gap | Today | Library shape | Memory and speed |
-|-----|-------|---------------|------------------|
-| Applications cannot publish their own stages | Every publishing method of `Telemetry` is internal; a hook only receives the library's events, so an application's pipeline cannot appear in the same console, JSON Lines or recorder output | `Telemetry.Stage("ink")` returning a disposable scope that publishes `StageCompleted(Name, Duration, Device?, Memory?)` under a new `TelemetryLevel.Stages` | One static read and an AND when nobody listens, as today's sources |
-| `Idrak.Vision` publishes nothing | `Foreground.Extract`, `ConnectedComponents.Find`, `ContentFrame` framing inside `RegionClassifier.Classify` (CPU work beside the model), `ModelDetector` decoding and suppression, `ModelSegmenter` | Stage events from each, through the same `Stages` level | Timestamps only when enabled |
-| Model loading is not reported | `Predictor.Load`, `RegionClassifier.Load` and `ModelPackage` publish nothing (only `InferenceEngine` reports `ModelLoaded`) | A load event: package, bytes read, parameters, device, duration | |
-| Image decoding is not reported | `ImageCodecs.Decode` (and a converter's run) | A stage event with the codec, size and duration | |
-| No memory with inference, no peak anywhere | `InferenceCompleted` has no memory (`EpochCompleted` has `MemoryUsage`); `MemoryUsage` has in use, cached and limit but no peak, so a page's VRAM peak cannot be read | `MemoryUsage.Peak` (with a reset), and the device's memory on `InferenceCompleted` | A peak is one compare per allocation in the memory pool |
-| First call and warm calls look alike | The first `Predict` includes compiling kernels and JIT; `InferenceCompleted` cannot tell it apart (MultiLanguageOcr runs a warm repeat to show the steady speed) | A `First` flag on `InferenceCompleted`, or a kernel-compilation event | |
-| The model's name is its type | `InferenceCompleted.Model` is the module's display name ("Sequential(5 layers)"), not the package it came from | The package name or a name given at load | |
-| No .NET metrics bridge | No `System.Diagnostics.Metrics` or `ActivitySource`, so `dotnet-counters` and OpenTelemetry see nothing | A hook that turns events into meters and activities, in the core or an optional package | Only when subscribed |
+| Gap | Today | Library shape | Memory and speed | Target |
+|-----|-------|---------------|------------------|--------|
+| Applications cannot publish their own stages | Every publishing method of `Telemetry` is internal; a hook only receives the library's events, so an application's pipeline cannot appear in the same console, JSON Lines or recorder output | `Telemetry.Stage("ink")` returning a disposable scope that publishes `StageCompleted(Name, Duration, Device?, Memory?)` under a new `TelemetryLevel.Stages` | One static read and an AND when nobody listens, as today's sources | 0.3.2 |
+| `Idrak.Vision` publishes nothing | `Foreground.Extract`, `ConnectedComponents.Find`, `ContentFrame` framing inside `RegionClassifier.Classify` (CPU work beside the model), `ModelDetector` decoding and suppression, `ModelSegmenter` | Stage events from each, through the same `Stages` level | Timestamps only when enabled | 0.3.2 |
+| Model loading is not reported | `Predictor.Load`, `RegionClassifier.Load` and `ModelPackage` publish nothing (only `InferenceEngine` reports `ModelLoaded`) | A load event: package, bytes read, parameters, device, duration | | 0.3.2 |
+| Image decoding is not reported | `ImageCodecs.Decode` (and a converter's run) | A stage event with the codec, size and duration | | 0.3.2 |
+| No memory with inference, no peak anywhere | `InferenceCompleted` has no memory (`EpochCompleted` has `MemoryUsage`); `MemoryUsage` has in use, cached and limit but no peak, so a page's VRAM peak cannot be read | `MemoryUsage.Peak` (with a reset), and the device's memory on `InferenceCompleted` | A peak is one compare per allocation in the memory pool | 0.3.2 |
+| First call and warm calls look alike | The first `Predict` includes compiling kernels and JIT; `InferenceCompleted` cannot tell it apart (MultiLanguageOcr runs a warm repeat to show the steady speed) | A `First` flag on `InferenceCompleted`, or a kernel-compilation event | | 0.3.2 |
+| The model's name is its type | `InferenceCompleted.Model` is the module's display name ("Sequential(5 layers)"), not the package it came from | The package name or a name given at load | | 0.3.2 |
+| No .NET metrics bridge | No `System.Diagnostics.Metrics` or `ActivitySource`, so `dotnet-counters` and OpenTelemetry see nothing | A hook that turns events into meters and activities, in the core or an optional package | Only when subscribed | 0.4.0 (optional package) |
 
 ## Stays in the samples
 
