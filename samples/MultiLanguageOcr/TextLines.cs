@@ -25,13 +25,15 @@ internal sealed class TextLineProposer : IRegionProposer
     /// <remarks>
     /// A space is a gap wider than half the line's typical character height (the line's band is no measure: tall
     /// letters, descenders and Arabic dots make it far taller than a character). A line whose characters are much
-    /// smaller than the page's (fine print at the paper's edge, specks) is left out.
+    /// smaller than the page's (fine print at the paper's edge, specks, a printed header) is left out; the page's
+    /// typical height weighs each line by its ink, so the writing sets it.
     /// </remarks>
     public List<Glyph> Find(ForegroundImage image)
     {
         int width = image.Width, height = image.Height;
         var lines = new List<List<PixelBox>>();
-        foreach (var (top, bottom) in MergeThin(Runs([.. Enumerable.Range(0, height).Select(y => Count(image, y, 0, width, horizontal: true))], minGap: 2, minLength: 1)))
+        var rows = Enumerable.Range(0, height).Select(y => Count(image, y, 0, width, horizontal: true)).ToArray();
+        foreach (var (top, bottom) in SplitMerged(MergeThin(Runs(rows, minGap: 2, minLength: 1)), rows))
         {
             var columns = Enumerable.Range(0, width).Select(x => Count(image, x, top, bottom, horizontal: false)).ToArray();
             var boxes = new List<PixelBox>();
@@ -49,7 +51,11 @@ internal sealed class TextLineProposer : IRegionProposer
                 lines.Add(boxes);
         }
 
-        int page = Median(lines.SelectMany(l => l.Select(b => b.Height)));
+        // The page's typical character height: the lines' typical heights, each weighted by its line's area of boxes, so
+        // the writing counts and specks or fine print do not.
+        var weighted = lines.Select(l => (Height: Median(l.Select(b => b.Height)), Weight: l.Sum(b => (long)b.Area))).OrderBy(l => l.Height).ToList();
+        long half = weighted.Sum(l => l.Weight) / 2, seen = 0;
+        int page = weighted.FirstOrDefault(l => (seen += l.Weight) > half).Height;
         var glyphs = new List<Glyph>();
         foreach (var boxes in lines)
         {
@@ -67,6 +73,46 @@ internal sealed class TextLineProposer : IRegionProposer
     {
         var sorted = values.Order().ToArray();
         return sorted.Length == 0 ? 0 : sorted[sorted.Length / 2];
+    }
+
+    // Bands much taller than the others that hold an almost empty row in their middle are lines that a descender, a
+    // dot or a stroke joined: each is cut at its emptiest middle row (a row with at most 8% of the band's fullest
+    // row's ink, in its middle 70%) when both parts are line-sized and neither is mostly empty, and the parts are
+    // checked again. A tall line of its own (Arabic with dots above and below) has no such row, and a line's
+    // descenders hold far less ink than the line: both stay whole.
+    private static List<(int Start, int End)> SplitMerged(List<(int Start, int End)> bands, int[] rows)
+    {
+        if (bands.Count < 2)
+            return bands;
+        double typical = bands.Select(b => b.End - b.Start).Order().ElementAt(bands.Count / 2);
+        var result = new List<(int Start, int End)>();
+        var pending = new Stack<(int Start, int End)>(Enumerable.Reverse(bands));
+        while (pending.Count > 0)
+        {
+            var (start, end) = pending.Pop();
+            int length = end - start;
+            if (length > 1.5 * typical)
+            {
+                int full = 0;
+                for (int y = start; y < end; y++)
+                    full = Math.Max(full, rows[y]);
+                int from = start + (int)(0.15 * length), to = end - (int)(0.15 * length), cut = -1;
+                for (int y = from; y < to; y++)
+                    if (cut < 0 || rows[y] < rows[cut])
+                        cut = y;
+                long Ink(int a, int b) { long n = 0; for (int y = a; y < b; y++) n += rows[y]; return n; }
+                bool lineSized = cut - start >= 0.6 * typical && end - cut >= 0.6 * typical;
+                long above = Ink(start, cut), below = Ink(cut, end);
+                if (cut > start && rows[cut] <= 0.08 * full && lineSized && Math.Min(above, below) >= 0.3 * Math.Max(above, below))
+                {
+                    pending.Push((cut, end));
+                    pending.Push((start, cut));
+                    continue;
+                }
+            }
+            result.Add((start, end));
+        }
+        return result;
     }
 
     // Row bands much thinner than a text line (the dots above and below Arabic letters, a stray mark) join the nearer
