@@ -20,7 +20,7 @@ using MultiLanguageOcr;
 //   dotnet run -- train   [--epochs 12] [--patience 3] [--batch 128] [--train-samples N] [--model multilang.ikm] [--data data]
 //   dotnet run -- demo    [--text "HELLO\nمرحبا"] [--out page.pgm]    writes a page in both scripts, then reads it
 //   dotnet run -- demo    --count 50 [--seed 1]                       50 pages of random words, scored per script
-//   dotnet run -- ocr     <page.png|bmp|pgm> [--model multilang.ikm]
+//   dotnet run -- ocr     <page.png|bmp|pgm> [--model multilang.ikm] [--crop x,y,w,h] [--photo | --no-photo]
 
 Console.OutputEncoding = Encoding.UTF8;
 int[] imageShape = [1, Datasets.Size, Datasets.Size];
@@ -234,21 +234,25 @@ void Ocr(SampleOptions o)
 {
     if (o.ImagePath is null)
         throw new ArgumentException("ocr needs an image of a page: dotnet run -- ocr page.png (or run 'demo' to make one)");
-    foreach (var line in ReadPage(o.ImagePath, o.ModelPath, show: true))
+    var crop = o.Crop is { } c ? PhotoPage.ParseCrop(c) : (PixelBox?)null;
+    foreach (var line in ReadPage(o.ImagePath, o.ModelPath, show: true, crop: crop, photo: o.Photo))
         Console.WriteLine($"[{(line.Script == Script.Arabic ? "ar" : "en")}] {line.Text}");
     Console.WriteLine($"Also written to {Path.GetFullPath(Path.ChangeExtension(o.ImagePath, ".txt"))}");
 }
 
 // The lines of a page image, each with its script and its text in reading order. Also writes them to a .txt file.
 // Idrak's RegionClassifier separates the ink, frames each character the layout finds and classifies them in batches.
-List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool show, bool report = true)
+List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool show, bool report = true, PixelBox? crop = null, bool? photo = null)
 {
     if (!File.Exists(modelPath))
         throw new FileNotFoundException($"No model at '{modelPath}'. Run 'dotnet run -- train' first.");
     using var classifier = RegionClassifier.Load(modelPath).Build();
     var byText = Characters.FromStored(classifier.Classes).ToDictionary(c => c.Text);
 
-    var page = classifier.Foreground(ImageCodecs.Decode(path));
+    var (page, prepared) = PhotoPage.Foreground(ImageCodecs.Decode(ImageConversion.Readable(path)), classifier, crop, photo);
+    if (report && prepared.Photo)
+        Console.WriteLine($"Read as a photo: one threshold took {prepared.GlobalInk:P0} of the pixels as ink; a local threshold " +
+            $"took {prepared.Ink:P1}, after removing {prepared.RuledPixels:N0} ruled-line pixels and {prepared.SurroundingRegions} regions around the page");
     var glyphs = new TextLineProposer().Find(page);
     var found = classifier.Classify(page, [.. glyphs.Select(g => g.Box)]);
     var answers = Enumerable.Range(0, found.Count).Select(i => found.Top(i, found.Classes.Count)).ToArray();

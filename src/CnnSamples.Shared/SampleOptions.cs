@@ -6,7 +6,7 @@ namespace CnnSamples.Shared;
 /// </summary>
 public sealed record SampleOptions(
     string Command, string? ImagePath, int Epochs, int Patience, int BatchSize, int? TrainSamples, string ModelPath,
-    string DataFolder, int ExportCount, string ExportFolder, string? Text = null, int? Seed = null)
+    string DataFolder, int ExportCount, string ExportFolder, string? Text = null, int? Seed = null, string? Crop = null, bool? Photo = null)
 {
     /// <summary>Parses <paramref name="args"/> over <paramref name="defaults"/>.</summary>
     /// <exception cref="ArgumentException">An unknown option, or an option without its value.</exception>
@@ -40,6 +40,9 @@ public sealed record SampleOptions(
                 "--out" => o with { ExportFolder = Value() },
                 "--text" => o with { Text = Value() },
                 "--seed" => o with { Seed = Number() },
+                "--crop" => o with { Crop = Value() },
+                "--photo" => o with { Photo = true },
+                "--no-photo" => o with { Photo = false },
                 _ => throw new ArgumentException($"Unknown option {args[i]}."),
             };
         }

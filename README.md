@@ -57,6 +57,7 @@ To install the CLI for every folder instead of this repository only, run `dotnet
 | `samples/`            | Runnable sample apps, one folder and README each            |
 | `src/CnnSamples.Shared` | Code every sample uses; see its README                    |
 | `tests/`              | Tests (empty for now)                                       |
+| `docs/idrak-candidates.md` | Pieces built here first that are meant to move into Idrak, and what moved |
 
 Downloaded datasets (`samples/*/data/`), exported test images (`samples/*/test-digits/`, `samples/*/test-letters/`),
 demo pages (`page.pgm`, `page.txt`) and trained models (`*.ikm`) are git-ignored.

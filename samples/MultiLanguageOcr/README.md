@@ -174,6 +174,30 @@ also written to a `.txt` file next to the image.
 For the best results, write characters separately with clear gaps (Arabic letters in their isolated forms). Keep lines
 straight and apart, and crop the scan to the text.
 
+**Photos.** A phone photo of a notebook page works too ([`PhotoPage.cs`](PhotoPage.cs)). When one threshold would
+take more than 15% of the photo as ink (shadows, the desk, the binding), the page is read as a photo:
+
+- a local threshold: a pixel is ink where it is clearly darker than its surroundings, so uneven light does not count;
+- the ruled lines of notebook paper are removed (thin strokes running far sideways), keeping the letters that cross
+  them;
+- what lies around the page goes: regions at the photo's edge, regions far larger than writing, and regions drawn much
+  thicker than the writing (a binding's loops, a cover's edge).
+
+`--photo` and `--no-photo` force the choice. `--crop x,y,width,height` reads only that part of the image (in pixels),
+for a printed header or anything else that is not the writing:
+
+```sh
+dotnet run -c Release -- ocr notebook.jpeg --crop 120,240,750,590
+```
+
+**Formats.** PNG, BMP and PGM are read directly. Any other format (JPEG, WebP, HEIC, TIFF, GIF) is first converted to
+an uncompressed BMP next to it (`photo.jpeg` → `photo.bmp`, reused on the next run) by the first converter available
+([`ImageConversion.cs`](ImageConversion.cs)): Windows' own imaging on every Windows, else ImageMagick (`magick`) or
+ffmpeg. A converter of your own implements `IImageConverter` and registers with `ImageConversion.Register`.
+
+Joined handwriting is still out of reach: all Arabic words and joined English ("on", "Read") come out as one box per
+word, which a model of single characters cannot read.
+
 ## How the code uses Idrak
 
 - **Data**: three data sets joined into one `Dataset.FromClassLabels(...)` of 85 classes. `DataLoader` with
