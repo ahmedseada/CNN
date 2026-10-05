@@ -144,6 +144,16 @@ characters. Latin digits scored 87.6%, Latin letters 88.3%, Arabic letters 96.4%
 on their own (`L`/`1`, `O`/`0`, `I`/`1`, `q`/`9`, and `F`/`f`, which EMNIST Balanced keeps apart). Word context
 fixes many of them on a page.
 
+One page says little: it always holds the same text and, with the same seed, the same test characters. For a fair
+measure, read many pages of random words, each from other test characters (words of letters and numbers in both
+scripts, with no spelling to lean on):
+
+```sh
+dotnet run -c Release -- demo --count 50              # pages 1-50; --seed 100 starts elsewhere
+```
+
+It prints every line with an error and the character error rate per script over all the pages.
+
 Your own text: `--text "ROOM 101 OPENS AT 0815\nبيت ٢٠٢ مفتوح"` (`\n` starts a new line; use the 85 characters above).
 `--out FILE` chooses where the page is written.
 

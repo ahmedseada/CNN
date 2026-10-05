@@ -19,6 +19,7 @@ using MultiLanguageOcr;
 //   dotnet idrak @arabic.rsp        AHCD and MADBase from Kaggle (needs a Kaggle API token)
 //   dotnet run -- train   [--epochs 12] [--patience 3] [--batch 128] [--train-samples N] [--model multilang.ikm] [--data data]
 //   dotnet run -- demo    [--text "HELLO\nمرحبا"] [--out page.pgm]    writes a page in both scripts, then reads it
+//   dotnet run -- demo    --count 50 [--seed 1]                       50 pages of random words, scored per script
 //   dotnet run -- ocr     <page.png|bmp|pgm> [--model multilang.ikm]
 
 Console.OutputEncoding = Encoding.UTF8;
@@ -147,10 +148,10 @@ void Train(SampleOptions o)
     Console.WriteLine("Try it: dotnet run -c Release -- demo");
 }
 
-// Writes a page of handwriting in both scripts for a known text, reads it back and compares.
+// Writes a page of handwriting in both scripts for a known text, reads it back and compares. With --count N (or
+// --seed), it writes N pages of random words instead, each from other test characters, and scores them together.
 void Demo(SampleOptions o)
 {
-    string text = (o.Text ?? DemoText).Replace("\\n", "\n");
     var (_, testPart, classes) = Datasets.Load(o.DataFolder, perSource: 20_000, training: false);
     var byText = classes.ToDictionary(c => c.Text);
     var pools = classes.Select(c => new List<int>()).ToArray();
@@ -167,28 +168,66 @@ void Demo(SampleOptions o)
         return PageWriter.Crop(testPart.Images[pool[random.Next(pool.Count)]], Datasets.Size, Datasets.Size);
     }
 
-    var (pixels, width, height) = PageWriter.Write(text, Glyph, Characters.IsRightToLeft);
+    int pages = Math.Max(o.ExportCount, 1);
+    bool random = o.ExportCount > 0 || o.Seed is not null;
+    int seed = o.Seed ?? 1;
     string page = o.ExportFolder;
-    ImageFiles.WritePgm(page, pixels, height, width);
-    Console.WriteLine($"Wrote a {width} x {height} page of handwriting to {Path.GetFullPath(page)}");
-
-    var lines = ReadPage(page, o.ModelPath, show: false);
-    var expected = text.Replace("\r", "").Split('\n');
-    Console.WriteLine();
-    int errors = 0, total = 0;
-    for (int i = 0; i < Math.Max(expected.Length, lines.Count); i++)
+    var errorsByScript = new Dictionary<Script, (int Errors, int Total)>();
+    for (int p = 0; p < pages; p++)
     {
-        string want = i < expected.Length ? expected[i] : "", got = i < lines.Count ? lines[i].Text : "";
-        int e = Levenshtein(Comparable(want), Comparable(got));
-        (errors, total) = (errors + e, total + Comparable(want).Length);
-        Console.WriteLine($"line {i + 1} ({(i < lines.Count ? lines[i].Script.ToString() : "-")})");
-        Console.WriteLine($"  expected: {want}");
-        Console.WriteLine($"  read:     {got}");
-        Console.WriteLine($"  {e} edit{(e == 1 ? "" : "s")}");
+        string text = random ? RandomText(classes, new Random(seed + p)) : (o.Text ?? DemoText).Replace("\\n", "\n");
+        var (pixels, width, height) = PageWriter.Write(text, Glyph, Characters.IsRightToLeft, seed: seed + p);
+        ImageFiles.WritePgm(page, pixels, height, width);
+        if (pages == 1)
+            Console.WriteLine($"Wrote a {width} x {height} page of handwriting to {Path.GetFullPath(page)}");
+
+        var lines = ReadPage(page, o.ModelPath, show: false, report: pages == 1);
+        var expected = text.Replace("\r", "").Split('\n');
+        if (pages == 1)
+            Console.WriteLine();
+        int pageErrors = 0, pageTotal = 0;
+        for (int i = 0; i < Math.Max(expected.Length, lines.Count); i++)
+        {
+            string want = i < expected.Length ? expected[i] : "", got = i < lines.Count ? lines[i].Text : "";
+            int e = Levenshtein(Comparable(want), Comparable(got));
+            var script = Characters.IsRightToLeft(want) ? Script.Arabic : Script.Latin;
+            var (se, st) = errorsByScript.GetValueOrDefault(script);
+            errorsByScript[script] = (se + e, st + Comparable(want).Length);
+            (pageErrors, pageTotal) = (pageErrors + e, pageTotal + Comparable(want).Length);
+            if (pages == 1 || e > 0)
+            {
+                Console.WriteLine($"{(pages == 1 ? "" : $"page {p + 1} ")}line {i + 1} ({(i < lines.Count ? lines[i].Script.ToString() : "-")})");
+                Console.WriteLine($"  expected: {want}");
+                Console.WriteLine($"  read:     {got}");
+                Console.WriteLine($"  {e} edit{(e == 1 ? "" : "s")}");
+            }
+        }
     }
+
     Console.WriteLine();
-    Console.WriteLine($"Character error rate: {errors / (double)Math.Max(total, 1):P1} ({errors} edit{(errors == 1 ? "" : "s")} over {total} characters)");
-    Console.WriteLine($"The text read is also in {Path.GetFullPath(Path.ChangeExtension(page, ".txt"))} (an editor shows Arabic joined and right to left).");
+    int errors = errorsByScript.Values.Sum(v => v.Errors), total = errorsByScript.Values.Sum(v => v.Total);
+    if (pages > 1)
+    {
+        Console.WriteLine($"{pages} pages of random words (seeds {seed}-{seed + pages - 1}), each from other test characters:");
+        foreach (var (script, (e, t)) in errorsByScript.OrderBy(kv => kv.Key))
+            Console.WriteLine($"  {script,-6} {e / (double)Math.Max(t, 1):P1} character error rate ({e} edits over {t:N0} characters)");
+    }
+    Console.WriteLine($"Character error rate: {errors / (double)Math.Max(total, 1):P1} ({errors} edit{(errors == 1 ? "" : "s")} over {total:N0} characters)");
+    Console.WriteLine($"The text read{(pages > 1 ? " from the last page" : "")} is also in {Path.GetFullPath(Path.ChangeExtension(page, ".txt"))} (an editor shows Arabic joined and right to left).");
+}
+
+// A page of random words: a Latin line and an Arabic line, each with two words of letters and one number, and the
+// same again. Random words have no spelling to lean on, so every character must be read on its own.
+static string RandomText(CharacterClass[] classes, Random random)
+{
+    string Word(Script script, bool digits, int min, int max)
+    {
+        var pick = classes.Where(c => c.Script == script && c.IsDigit == digits).ToArray();
+        return string.Concat(Enumerable.Range(0, random.Next(min, max + 1)).Select(_ => pick[random.Next(pick.Length)].Text));
+    }
+
+    string Line(Script script) => string.Join(' ', Word(script, false, 2, 6), Word(script, true, 2, 4), Word(script, false, 2, 6));
+    return string.Join('\n', Line(Script.Latin), Line(Script.Arabic), Line(Script.Latin), Line(Script.Arabic));
 }
 
 void Ocr(SampleOptions o)
@@ -202,7 +241,7 @@ void Ocr(SampleOptions o)
 
 // The lines of a page image, each with its script and its text in reading order. Also writes them to a .txt file.
 // Idrak's RegionClassifier separates the ink, frames each character the layout finds and classifies them in batches.
-List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool show)
+List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool show, bool report = true)
 {
     if (!File.Exists(modelPath))
         throw new FileNotFoundException($"No model at '{modelPath}'. Run 'dotnet run -- train' first.");
@@ -213,7 +252,8 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
     var glyphs = new TextLineProposer().Find(page);
     var found = classifier.Classify(page, [.. glyphs.Select(g => g.Box)]);
     var answers = Enumerable.Range(0, found.Count).Select(i => found.Top(i, found.Classes.Count)).ToArray();
-    Console.WriteLine($"Found {glyphs.Count} characters on {glyphs.Select(g => g.Line).Distinct().Count()} lines");
+    if (report)
+        Console.WriteLine($"Found {glyphs.Count} characters on {glyphs.Select(g => g.Line).Distinct().Count()} lines");
 
     var lines = new List<(Script, string)>();
     foreach (var line in Enumerable.Range(0, glyphs.Count).GroupBy(i => glyphs[i].Line))
