@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.IO.Compression;
 using CnnSamples.Shared;
 using Idrak.Data;
@@ -83,40 +82,128 @@ internal static class Datasets
                 && e.Name.Contains(kind, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidDataException($"{archive}.zip has no {split} {kind} CSV (it has {string.Join(", ", zip.Entries.Select(e => e.Name))}).");
 
-        var labels = ReadCsv(Entry("label")).Select(v => (int)v[0] + offset).ToArray();
-        var images = ReadCsv(Entry("image")).ToArray();
-        if (images.Length != labels.Length)
-            throw new InvalidDataException($"{archive}.zip: {images.Length} {split} images but {labels.Length} labels.");
+        var labelTable = ReadByteCsv(Entry("label"));
+        var images = ReadByteCsv(Entry("image"));
+        if (images.Rows != labelTable.Rows)
+            throw new InvalidDataException($"{archive}.zip: {images.Rows} {split} images but {labelTable.Rows} labels.");
+        if (images.Columns != rows * rows)
+            throw new InvalidDataException($"{archive}.zip: its {split} images have {images.Columns} values, expected {rows * rows}.");
 
-        var picked = TestImages.RandomSubset(labels.Length, Math.Min(count ?? labels.Length, labels.Length));
-        return new([.. picked.Select(i => Frame(Upright(images[i], rows, columnMajor), rows))], [.. picked.Select(i => labels[i])]);
+        var picked = TestImages.RandomSubset(labelTable.Rows, Math.Min(count ?? labelTable.Rows, labelTable.Rows));
+        return new([.. picked.Select(i => Frame(Upright(images.Row(i), rows, columnMajor), rows))],
+            [.. picked.Select(i => labelTable.Row(i)[0] + offset)]);
     }
 
     // The image upright (a column-by-column image is transposed), with ink high (white on black) whichever way the file has it.
-    private static float[] Upright(double[] values, int rows, bool columnMajor)
+    private static float[] Upright(ReadOnlySpan<byte> values, int rows, bool columnMajor)
     {
-        if (values.Length != rows * rows)
-            throw new InvalidDataException($"An image has {values.Length} values, expected {rows * rows}.");
         var image = new float[rows * rows];
+        float sum = 0;
         for (int y = 0; y < rows; y++)
             for (int x = 0; x < rows; x++)
-                image[y * rows + x] = (float)(values[columnMajor ? x * rows + y : y * rows + x] / 255.0);
-        return image.Average() > 0.5f ? [.. image.Select(v => 1f - v)] : image;
+                sum += image[y * rows + x] = values[columnMajor ? x * rows + y : y * rows + x] / 255f;
+        if (sum / image.Length > 0.5f)
+            for (int i = 0; i < image.Length; i++)
+                image[i] = 1f - image[i];
+        return image;
     }
 
-    private static IEnumerable<double[]> ReadCsv(ZipArchiveEntry entry)
+    /// <summary>A CSV file of small whole numbers (0-255: pixels, labels), one byte each, row after row.</summary>
+    internal sealed record ByteTable(byte[] Values, int Rows, int Columns)
     {
-        using var reader = new StreamReader(entry.Open());
-        while (reader.ReadLine() is { } line)
+        public ReadOnlySpan<byte> Row(int row) => Values.AsSpan(row * Columns, Columns);
+    }
+
+    /// <summary>
+    /// Reads a CSV of whole numbers from 0 to 255 straight from its UTF-8 bytes, in blocks: no line, cell or number
+    /// becomes a string, and the table is one byte per value (a 60,000 x 784 file is 47 MB, not 376 MB of doubles).
+    /// A line holding anything but numbers (a header) is skipped; a value such as 255.0 reads as 255.
+    /// </summary>
+    internal static ByteTable ReadByteCsv(ZipArchiveEntry entry) => ReadByteCsv(entry.Open());
+
+    /// <inheritdoc cref="ReadByteCsv(ZipArchiveEntry)"/>
+    internal static ByteTable ReadByteCsv(Stream input)
+    {
+        using var stream = input;
+        var values = new byte[1 << 20];
+        int count = 0, rows = 0, columns = -1;
+        int lineStart = 0, cells = 0, value = 0;
+        bool digits = false, fraction = false, skip = false;
+        var block = new byte[1 << 20];
+
+        void EndCell()
         {
-            var cells = line.Split(',');
-            var values = new double[cells.Length];
-            bool numeric = true;
-            for (int i = 0; i < cells.Length && numeric; i++)
-                numeric = double.TryParse(cells[i], NumberStyles.Float, CultureInfo.InvariantCulture, out values[i]);
-            if (numeric && cells.Length > 0)
-                yield return values;   // a header line, if any, is skipped
+            if (!digits)
+            {
+                skip = true;                                                      // an empty cell: not a row of numbers
+                return;
+            }
+            if (count == values.Length)
+                Array.Resize(ref values, values.Length * 2);
+            values[count++] = (byte)value;
+            cells++;
+            (value, digits, fraction) = (0, false, false);
         }
+
+        void EndLine()
+        {
+            if (digits)
+                EndCell();                                                        // a line's last value (a trailing comma has none)
+            if (skip || cells == 0)
+                count = lineStart;                                                // a header or a blank line
+            else
+            {
+                if (columns < 0)
+                    columns = cells;
+                else if (cells != columns)
+                    throw new InvalidDataException($"Row {rows + 1} has {cells} values, the rows before it {columns}.");
+                rows++;
+            }
+            (lineStart, cells, value, digits, fraction, skip) = (count, 0, 0, false, false, false);
+        }
+
+        int read;
+        while ((read = stream.Read(block, 0, block.Length)) > 0)
+        {
+            foreach (byte b in block.AsSpan(0, read))
+            {
+                if (skip && b != (byte)'\n')
+                    continue;
+                switch (b)
+                {
+                    case >= (byte)'0' and <= (byte)'9' when fraction:
+                        if (b != (byte)'0')
+                            skip = true;                                          // 12.5: not a whole number
+                        break;
+                    case >= (byte)'0' and <= (byte)'9':
+                        value = value * 10 + (b - '0');
+                        digits = true;
+                        if (value > 255)
+                            throw new InvalidDataException($"Row {rows + 1} holds a value past 255; this reader takes pixels and labels.");
+                        break;
+                    case (byte)'.' when digits && !fraction:
+                        fraction = true;
+                        break;
+                    case (byte)',':
+                        EndCell();
+                        break;
+                    case (byte)'\n':
+                        EndLine();
+                        break;
+                    case (byte)'\r' or (byte)' ' or (byte)'\t':
+                        break;
+                    case 0xEF or 0xBB or 0xBF when count == lineStart && cells == 0 && !digits:
+                        break;                                                    // a UTF-8 byte order mark
+                    default:
+                        skip = true;                                              // a header's text
+                        break;
+                }
+            }
+        }
+        EndLine();
+        if (columns < 0)
+            throw new InvalidDataException("The CSV has no rows of numbers.");
+        return new ByteTable(values, rows, columns);
     }
 
     // A data set's image framed by Idrak's ContentFrame the way the RegionClassifier frames a character cut from a page:

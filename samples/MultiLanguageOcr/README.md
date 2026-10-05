@@ -166,7 +166,11 @@ and right to left.
 ```sh
 dotnet run -c Release -- ocr page.pgm                      # the demo's page
 dotnet run -c Release -- ocr C:\path\to\form.png           # a scan or photo of your own
+dotnet run -c Release -- ocr C:\path\to\pages              # every image in a folder, the model loaded once
 ```
+
+`--show` prints each line's least certain character as the model saw it; `--bench` classifies a page a second time to
+show the warm speed (the speed of every page after the first).
 
 Each line prints with its script (`[en]` or `[ar]`), along with the least certain character of each line. The text is
 also written to a `.txt` file next to the image.
@@ -201,8 +205,9 @@ A dash (a short flat mark between words) is read as `-` without the model.
 On the notebook photo in this sample's history, with a model of digits trained on MNIST framed the same way, the
 number line `01345 - 16108` reads every digit.
 
-**Speed.** Every `ocr` run prints where the time went: loading the model, opening the image, the ink, the lines and
-characters, the model (a first run and a warm repeat, the speed of every later page), and words and reading order;
+**Speed.** An `ocr` of one image prints where the time went: opening the image, the ink, the lines and characters,
+the model (its first run, and with `--bench` a warm repeat), and words and reading order; a folder prints each page's
+time and the pages' average, the model's loading and first-call costs paid once;
 then the device's memory as Idrak counts it and the process's peak memory. The model's time comes from Idrak's
 inference telemetry (each batch timed with the device synchronized), the framing being the rest of a classify;
 `--telemetry` also prints Idrak's own inference events. The other stages are timed in the sample: Idrak publishes no

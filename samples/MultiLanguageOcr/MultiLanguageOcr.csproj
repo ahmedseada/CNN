@@ -3,6 +3,9 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>MultiLanguageOcr</RootNamespace>
+    <!-- One page is read in one run: methods with loops (the pixel work) are compiled optimized at their first call
+         instead of starting as quick, unoptimized code. -->
+    <TieredCompilationQuickJitForLoops>false</TieredCompilationQuickJitForLoops>
   </PropertyGroup>
 
   <ItemGroup>

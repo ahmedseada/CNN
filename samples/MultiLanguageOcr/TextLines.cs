@@ -31,19 +31,42 @@ internal sealed class TextLineProposer : IRegionProposer
     public List<Glyph> Find(ForegroundImage image)
     {
         int width = image.Width, height = image.Height;
+
+        // One byte per pixel, 1 on ink, read row by row from here on: each row's ink is counted once, a line's columns are
+        // summed a row at a time (in memory order), and a character's own rows are found with vectorized searches.
+        var mask = new byte[width * height];
+        var values = image.Values;
+        float threshold = image.Threshold;
+        var rows = new int[height];
+        for (int y = 0; y < height; y++)
+        {
+            int count = 0;
+            for (int x = 0, i = y * width; x < width; x++, i++)
+                if (values[i] > threshold) { mask[i] = 1; count++; }
+            rows[y] = count;
+        }
+
         var lines = new List<List<PixelBox>>();
-        var rows = Enumerable.Range(0, height).Select(y => Count(image, y, 0, width, horizontal: true)).ToArray();
+        var columns = new int[width];
         foreach (var (top, bottom) in SplitMerged(MergeThin(Runs(rows, minGap: 2, minLength: 1)), rows))
         {
-            var columns = Enumerable.Range(0, width).Select(x => Count(image, x, top, bottom, horizontal: false)).ToArray();
+            Array.Clear(columns);
+            for (int y = top; y < bottom; y++)
+            {
+                var row = mask.AsSpan(y * width, width);
+                for (int x = 0; x < width; x++)
+                    columns[x] += row[x];
+            }
+
             var boxes = new List<PixelBox>();
             foreach (var (left, right) in Split(Runs(columns, minGap: 1, minLength: 1), columns, bottom - top))
             {
-                // The character's own rows within the line.
-                int charTop = bottom, charBottom = top;
-                for (int y = top; y < bottom; y++)
-                    for (int x = left; x < right; x++)
-                        if (image.IsForeground(x, y)) { charTop = Math.Min(charTop, y); charBottom = Math.Max(charBottom, y + 1); }
+                // The character's own rows within the line: the first and last rows with ink between its columns.
+                int charTop = top, charBottom = bottom;
+                while (charTop < bottom && !mask.AsSpan(charTop * width + left, right - left).ContainsAnyExcept((byte)0))
+                    charTop++;
+                while (charBottom > charTop && !mask.AsSpan((charBottom - 1) * width + left, right - left).ContainsAnyExcept((byte)0))
+                    charBottom--;
                 if (charBottom > charTop && (right - left) * (charBottom - charTop) >= 6)   // else a speck
                     boxes.Add(new PixelBox(left, charTop, right - left, charBottom - charTop));
             }
@@ -135,15 +158,6 @@ internal sealed class TextLineProposer : IRegionProposer
             runs.RemoveAt(second);
         }
         return [.. runs.Where(r => r.End - r.Start >= 3)];
-    }
-
-    private static int Count(ForegroundImage image, int index, int from, int to, bool horizontal)
-    {
-        int count = 0;
-        for (int i = from; i < to; i++)
-            if (horizontal ? image.IsForeground(i, index) : image.IsForeground(index, i))
-                count++;
-        return count;
     }
 
     // Runs of non-zero counts, merging runs separated by fewer than minGap zeros and dropping runs shorter than minLength.

@@ -20,7 +20,7 @@ using MultiLanguageOcr;
 //   dotnet run -- train   [--epochs 12] [--patience 3] [--batch 128] [--train-samples N] [--model multilang.ikm] [--data data]
 //   dotnet run -- demo    [--text "HELLO\nمرحبا"] [--out page.pgm]    writes a page in both scripts, then reads it
 //   dotnet run -- demo    --count 50 [--seed 1]                       50 pages of random words, scored per script
-//   dotnet run -- ocr     <page.png|bmp|pgm> [--model multilang.ikm] [--crop x,y,w,h] [--photo | --no-photo] [--telemetry]
+//   dotnet run -- ocr     <image or folder> [--model multilang.ikm] [--crop x,y,w,h] [--photo | --no-photo] [--show] [--bench] [--telemetry]
 
 Console.OutputEncoding = Encoding.UTF8;
 int[] imageShape = [1, Datasets.Size, Datasets.Size];
@@ -168,6 +168,11 @@ void Demo(SampleOptions o)
         return PageWriter.Crop(testPart.Images[pool[random.Next(pool.Count)]], Datasets.Size, Datasets.Size);
     }
 
+    var (log, session) = InferenceLog.Start(console: o.Telemetry);
+    using var telemetry = session;
+    var (classifier, modelByText, _) = LoadModel(o.ModelPath);
+    using var model = classifier;
+
     int pages = Math.Max(o.ExportCount, 1);
     bool random = o.ExportCount > 0 || o.Seed is not null;
     int seed = o.Seed ?? 1;
@@ -181,7 +186,7 @@ void Demo(SampleOptions o)
         if (pages == 1)
             Console.WriteLine($"Wrote a {width} x {height} page of handwriting to {Path.GetFullPath(page)}");
 
-        var lines = ReadPage(page, o.ModelPath, show: false, report: pages == 1);
+        var lines = ReadPage(page, classifier, modelByText, report: pages == 1, bench: o.Bench, log: log).Lines;
         var expected = text.Replace("\r", "").Split('\n');
         if (pages == 1)
             Console.WriteLine();
@@ -233,34 +238,81 @@ static string RandomText(CharacterClass[] classes, Random random)
 void Ocr(SampleOptions o)
 {
     if (o.ImagePath is null)
-        throw new ArgumentException("ocr needs an image of a page: dotnet run -- ocr page.png (or run 'demo' to make one)");
+        throw new ArgumentException("ocr needs an image of a page, or a folder of them: dotnet run -- ocr page.png (or run 'demo' to make one)");
     var crop = o.Crop is { } c ? PhotoPage.ParseCrop(c) : (PixelBox?)null;
-    foreach (var line in ReadPage(o.ImagePath, o.ModelPath, show: true, crop: crop, photo: o.Photo, telemetry: o.Telemetry))
-        Console.WriteLine($"[{(line.Script == Script.Arabic ? "ar" : "en")}] {line.Text}");
-    Console.WriteLine($"Also written to {Path.GetFullPath(Path.ChangeExtension(o.ImagePath, ".txt"))}");
+    var (log, session) = InferenceLog.Start(console: o.Telemetry);
+    using var telemetry = session;
+    var (classifier, byText, loadMs) = LoadModel(o.ModelPath);
+    using var model = classifier;
+    Console.WriteLine($"Loaded the model in {loadMs:F0} ms");
+
+    if (!Directory.Exists(o.ImagePath))
+    {
+        var page = ReadPage(o.ImagePath, classifier, byText, show: o.Show, report: true, bench: o.Bench, crop: crop, photo: o.Photo, log: log);
+        foreach (var line in page.Lines)
+            Console.WriteLine($"[{(line.Script == Script.Arabic ? "ar" : "en")}] {line.Text}");
+        Console.WriteLine($"Also written to {Path.GetFullPath(Path.ChangeExtension(o.ImagePath, ".txt"))}");
+        return;
+    }
+
+    // A folder: every image in it, read with the one model (its loading and first-call costs paid once), the text of
+    // each page next to it (page.jpeg -> page.txt), and the time per page.
+    string[] extensions = [.. ImageCodecs.Extensions, ".jpg", ".jpeg", ".jfif", ".webp", ".heic", ".tif", ".tiff", ".gif"];
+    var files = Directory.EnumerateFiles(o.ImagePath)
+        .Where(f => extensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase))
+        .GroupBy(f => Path.ChangeExtension(f, null), StringComparer.OrdinalIgnoreCase)   // photo.jpeg and its converted photo.bmp: once
+        .Select(g => g.OrderBy(f => ImageCodecs.CanDecode(f) ? 1 : 0).First())
+        .Order(StringComparer.OrdinalIgnoreCase).ToArray();
+    if (files.Length == 0)
+        throw new ArgumentException($"No images in {o.ImagePath} ({string.Join(" ", extensions)}).");
+
+    var pages = new List<(string File, double Ms, int Characters)>();
+    foreach (var file in files)
+    {
+        var page = ReadPage(file, classifier, byText, show: o.Show, crop: crop, photo: o.Photo, log: log);
+        pages.Add((file, page.Ms, page.Characters));
+        Console.WriteLine($"{Path.GetFileName(file)}: {page.Characters} characters on {page.Lines.Count} lines in {page.Ms:F0} ms -> {Path.GetFileName(Path.ChangeExtension(file, ".txt"))}");
+        foreach (var line in page.Lines)
+            Console.WriteLine($"  [{(line.Script == Script.Arabic ? "ar" : "en")}] {line.Text}");
+    }
+
+    double total = pages.Sum(p => p.Ms);
+    int characters = pages.Sum(p => p.Characters);
+    var later = pages.Skip(1).ToArray();
+    Console.WriteLine();
+    Console.WriteLine($"{pages.Count} pages, {characters:N0} characters in {total:F0} ms on {Device.Default} (the model loaded in {loadMs:F0} ms besides): " +
+        $"{total / pages.Count:F0} ms a page{(later.Length > 0 ? $", {later.Average(p => p.Ms):F0} ms after the first" : "")}, {characters / (total / 1000):N0} characters/s");
+    using var process = Process.GetCurrentProcess();
+    Console.WriteLine($"Memory: {Device.Default} {InferenceLog.Memory(Device.Default)}; process peak working set {process.PeakWorkingSet64 / (1024.0 * 1024):N0} MB");
 }
 
-// The lines of a page image, each with its script and its text in reading order. Also writes them to a .txt file.
-// Idrak's RegionClassifier separates the ink, frames each character the layout finds and classifies them in batches.
-List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool show, bool report = true, PixelBox? crop = null, bool? photo = null, bool telemetry = false)
+// The model a run reads pages with: loaded once, however many pages follow.
+static (RegionClassifier Classifier, Dictionary<string, CharacterClass> ByText, double LoadMs) LoadModel(string modelPath)
 {
     if (!File.Exists(modelPath))
         throw new FileNotFoundException($"No model at '{modelPath}'. Run 'dotnet run -- train' first.");
-    // The model's time comes from Idrak's inference telemetry; the stages around it are timed here (Idrak publishes
-    // no events for loading, decoding, the ink, the layout or the framing).
-    var (log, session) = report ? InferenceLog.Start(console: telemetry) : (null, null);
-    using var telemetrySession = session;
+    var clock = Stopwatch.StartNew();
+    var classifier = RegionClassifier.Load(modelPath).Build();
+    return (classifier, Characters.FromStored(classifier.Classes).ToDictionary(c => c.Text), clock.Elapsed.TotalMilliseconds);
+}
+
+// The lines of a page image, each with its script and its text in reading order, and how long the page took (the
+// model loaded). Also writes them to a .txt file. With `report`, says what it found and where the time went; with
+// `bench`, classifies a second time to show the warm speed; with `show`, prints each line's least certain character.
+// The model's time comes from Idrak's inference telemetry (`log`); the stages around it are timed here (Idrak
+// publishes no events for decoding, the ink, the layout or the framing).
+(List<(Script Script, string Text)> Lines, double Ms, int Characters) ReadPage(string path, RegionClassifier classifier,
+    Dictionary<string, CharacterClass> byText, bool show = false, bool report = false, bool bench = false,
+    PixelBox? crop = null, bool? photo = null, InferenceLog? log = null)
+{
     var clock = Stopwatch.StartNew();
     var times = new List<(string Stage, double Ms)>();
     var model = new List<(string Stage, (int Batches, int Samples, TimeSpan Latency) Telemetry)>();
     void Lap(string stage) { times.Add((stage, clock.Elapsed.TotalMilliseconds)); clock.Restart(); }
 
-    using var classifier = RegionClassifier.Load(modelPath).Build();
-    var byText = Characters.FromStored(classifier.Classes).ToDictionary(c => c.Text);
-    Lap("load the model");
     var image = ImageCodecs.Decode(ImageConversion.Readable(path));
     Lap("open the image");
-    var (page, prepared) = PhotoPage.Foreground(image, classifier, crop, photo);
+    var (page, prepared) = PhotoPage.Foreground(image, crop, photo);
     Lap(prepared.Photo ? "ink (photo)" : "ink");
     if (report && prepared.Photo)
         Console.WriteLine($"Read as a photo: one threshold took {prepared.GlobalInk:P0} of the pixels as ink; a local threshold " +
@@ -272,7 +324,7 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
     Lap("classify (first run)");
     if (log is not null)
         model.Add(("classify (first run)", log.Since(before)));
-    if (log is not null && glyphs.Count > 0)
+    if (bench && log is not null && glyphs.Count > 0)
     {
         before = log.Count;
         classifier.Classify(page, [.. glyphs.Select(g => g.Box)]);           // again, warm: the speed of every later page
@@ -342,12 +394,10 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
     }
 
     File.WriteAllLines(Path.ChangeExtension(path, ".txt"), lines.Select(l => l.Item2), Encoding.UTF8);
+    Lap(show ? "words, order (and printing)" : "words and reading order");
     if (report)
-    {
-        Lap(show ? "words, order (and printing)" : "words and reading order");
         PrintTimes(times, model, glyphs.Count, image.Width, image.Height);
-    }
-    return lines;
+    return (lines, times.Where(t => t.Stage != "classify (warm)").Sum(t => t.Ms), glyphs.Count);
 }
 
 // Where the time went: each stage's wall time and, for the model, Idrak's inference telemetry (the device's own time
@@ -369,8 +419,8 @@ static void PrintTimes(List<(string Stage, double Ms)> times, List<(string Stage
         }
         Console.WriteLine($"  {stage,-26} {ms,9:F1} ms{note}");
     }
-    double page = times.Where(t => t.Stage != "load the model" && t.Stage != "classify (warm)").Sum(t => t.Ms);
-    Console.WriteLine($"  {"page, model loaded",-26} {page,9:F1} ms (all but loading the model and the warm repeat)");
+    double page = times.Where(t => t.Stage != "classify (warm)").Sum(t => t.Ms);
+    Console.WriteLine($"  {"page",-26} {page,9:F1} ms{(times.Any(t => t.Stage == "classify (warm)") ? " (without the warm repeat)" : "")}");
     using var process = Process.GetCurrentProcess();
     Console.WriteLine($"  memory: {Device.Default} {InferenceLog.Memory(Device.Default)}; process peak working set {process.PeakWorkingSet64 / (1024.0 * 1024):N0} MB");
 }

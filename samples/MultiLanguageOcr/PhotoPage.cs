@@ -24,34 +24,66 @@ internal static class PhotoPage
     public sealed record Report(bool Photo, double GlobalInk, double Ink, int RuledPixels, int SurroundingRegions);
 
     /// <summary>
-    /// The ink of <paramref name="image"/> (optionally cropped to <paramref name="crop"/> first): the classifier's
-    /// global foreground for a clean page, or the photo pipeline when that takes in too much (or when
+    /// The ink of <paramref name="image"/> (optionally cropped to <paramref name="crop"/> first): the global
+    /// foreground for a clean page (as a <see cref="RegionClassifier"/>'s default <c>Foreground</c> makes it), or the photo pipeline when that takes in too much (or when
     /// <paramref name="photo"/> forces it).
     /// </summary>
-    public static (ForegroundImage Ink, Report Report) Foreground(ImageData image, RegionClassifier classifier, PixelBox? crop = null, bool? photo = null)
+    public static (ForegroundImage Ink, Report Report) Foreground(ImageData image, PixelBox? crop = null, bool? photo = null)
     {
         if (crop is { } box)
             image = Crop(image, box);
 
-        var global = classifier.Foreground(image);
+        // One grey image serves both thresholds: the global foreground (Idrak's polarity rule and Otsu, as the
+        // classifier's default Foreground) and, for a photo, the local threshold.
+        int w = image.Width, h = image.Height;
+        var grey = Idrak.Vision.Foreground.Grey(image);
+        var global = Global(grey, w, h);
         double globalInk = Share(global.Values, global.Threshold);
         if (!(photo ?? (globalInk > PhotoInk || SpansPage(global))))
             return (global, new Report(false, globalInk, globalInk, 0, 0));
 
-        int w = image.Width, h = image.Height;
-        var ink = LocalInk(Idrak.Vision.Foreground.Grey(image), w, h, radius: Math.Max(8, Math.Min(w, h) / 60), margin: 0.12f);
+        var ink = LocalInk(grey, w, h, radius: Math.Max(8, Math.Min(w, h) / 60), margin: 0.12f);
         int ruled = RemoveRuledLines(ink, w, h, run: Math.Max(40, w / 15));
         var page = new ForegroundImage(ink, w, h, threshold: 0.05f, inverted: true);
         int surroundings = RemoveSurroundings(page, ink, edges: crop is null);
         return (page, new Report(true, globalInk, Share(ink, 0.05f), ruled, surroundings));
     }
 
+    // The global foreground of a grey image, as Foreground.Extract makes it by default: dark ink inverted when the
+    // image is mostly light, Otsu's threshold. It takes its own copy, so the grey stays for the local threshold.
+    private static ForegroundImage Global(float[] grey, int w, int h)
+    {
+        double sum = 0;
+        foreach (float v in grey)
+            sum += v;
+        bool invert = sum / Math.Max(grey.Length, 1) > 0.5;
+        var values = new float[grey.Length];
+        for (int i = 0; i < values.Length; i++)
+            values[i] = invert ? 1f - grey[i] : grey[i];
+        return new ForegroundImage(values, w, h, Idrak.Vision.Foreground.Otsu(values), invert);
+    }
+
     // Whether one region of a foreground spans half the image's width or a third of its height: writing never does (a
     // line of it is far less tall), the dark desk, cover or paper edge around a photographed page does (even when they
-    // are less than PhotoInk of the pixels).
-    private static bool SpansPage(ForegroundImage foreground) =>
-        ConnectedComponents.Find(foreground, Connectivity.Eight).Regions
-            .Any(r => r.Box.Width > foreground.Width / 2 || r.Box.Height > foreground.Height / 3);
+    // are less than PhotoInk of the pixels). Judged on a copy a quarter the size each way (a 4 x 4 block is ink when
+    // any pixel of it is), where finding the regions takes a sixteenth of the work and the spans hardly change.
+    private static bool SpansPage(ForegroundImage foreground)
+    {
+        const int Block = 4;
+        int w = foreground.Width, h = foreground.Height, sw = (w + Block - 1) / Block, sh = (h + Block - 1) / Block;
+        var small = new float[sw * sh];
+        var values = foreground.Values;
+        float threshold = foreground.Threshold;
+        for (int y = 0; y < h; y++)
+        {
+            int row = y / Block * sw;
+            for (int x = 0, i = y * w; x < w; x++, i++)
+                if (values[i] > threshold)
+                    small[row + x / Block] = 1f;
+        }
+        return ConnectedComponents.Find(new ForegroundImage(small, sw, sh, 0.5f), Connectivity.Eight).Regions
+            .Any(r => r.Box.Width > sw / 2 || r.Box.Height > sh / 3);
+    }
 
     /// <summary>Parses a crop given as x,y,width,height.</summary>
     public static PixelBox ParseCrop(string text)
@@ -78,7 +110,7 @@ internal static class PhotoPage
         }
 
         var ink = new float[w * h];
-        for (int y = 0; y < h; y++)
+        Parallel.For(0, h, y =>                                                   // rows are independent
         {
             int y0 = Math.Max(0, y - radius), y1 = Math.Min(h, y + radius + 1);
             for (int x = 0; x < w; x++)
@@ -89,7 +121,7 @@ internal static class PhotoPage
                 float darker = (float)(mean - grey[y * w + x]);
                 ink[y * w + x] = darker > margin ? darker : 0f;   // how much darker: pen ink more than a printed line
             }
-        }
+        });
         return ink;
     }
 
@@ -98,35 +130,55 @@ internal static class PhotoPage
     // so the strokes of letters crossing a line keep their ink above and below it.
     private static int RemoveRuledLines(float[] ink, int w, int h, int run)
     {
-        bool On(int x, int y) => x >= 0 && y >= 0 && x < w && y < h && ink[y * w + x] > 0;
-        int Reach(int x, int y, int dx)
+        // Column by column from here on (index x * h + y): every step below reads a neighbouring column or walks up and
+        // down one, which in this order is memory read in sequence.
+        var on = new byte[w * h];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                if (ink[y * w + x] > 0)
+                    on[x * h + y] = 1;
+        bool On(int x, int y) => x >= 0 && y >= 0 && x < w && y < h && on[x * h + y] != 0;
+
+        // How far ink continues sideways from each pixel (at most `run` steps), each step to the next column on the
+        // same row, else a row up, else a row down: one pass per direction, each pixel's reach one more than that of
+        // the pixel it steps to, instead of walking up to `run` steps from every pixel.
+        var right = new ushort[w * h];
+        var left = new ushort[w * h];
+        for (int x = w - 2; x >= 0; x--)
         {
-            int n = 0;
-            while (n < run)
+            int c = x * h, n = c + h;                                              // this column and the next
+            for (int y = 0; y < h; y++)
             {
-                int nx = x + dx;
-                if (On(nx, y)) { }
-                else if (On(nx, y - 1)) y--;
-                else if (On(nx, y + 1)) y++;
-                else break;
-                x = nx;
-                n++;
+                int next = on[n + y] != 0 ? y : y > 0 && on[n + y - 1] != 0 ? y - 1 : y + 1 < h && on[n + y + 1] != 0 ? y + 1 : -1;
+                if (next >= 0)
+                    right[c + y] = (ushort)Math.Min(run, 1 + right[n + next]);
             }
-            return n;
+        }
+        for (int x = 1; x < w; x++)
+        {
+            int c = x * h, p = c - h;                                              // this column and the previous
+            for (int y = 0; y < h; y++)
+            {
+                int next = on[p + y] != 0 ? y : y > 0 && on[p + y - 1] != 0 ? y - 1 : y + 1 < h && on[p + y + 1] != 0 ? y + 1 : -1;
+                if (next >= 0)
+                    left[c + y] = (ushort)Math.Min(run, 1 + left[p + next]);
+            }
         }
 
         var ruled = new List<int>();
-        for (int y = 0; y < h; y++)
-            for (int x = 0; x < w; x++)
+        for (int x = 0; x < w; x++)
+            for (int y = 0; y < h; y++)
             {
-                if (!On(x, y) || Reach(x, y, 1) + Reach(x, y, -1) < run)
+                int i = x * h + y;
+                if (on[i] == 0 || right[i] + left[i] < run)
                     continue;
                 int up = 0, down = 0;
                 while (up < 6 && On(x, y - up - 1)) up++;
                 while (down < 6 && On(x, y + down + 1)) down++;
                 if (up + down + 1 <= 4)
-                    ruled.Add(y * w + x);
+                    ruled.Add(y * w + x);                                          // back in the image's row order
             }
+
         // A pen stroke running along a ruled line stays: pen ink is darker than the printed line, so a pixel on a line
         // well darker than the line's own median (most of what was found is the line) is kept. On the notebook photo this
         // keeps the 5's bar and the 3's lower curve, which the line erased, and every digit of its number line reads.
