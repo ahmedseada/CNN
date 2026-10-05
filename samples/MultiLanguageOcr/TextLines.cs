@@ -22,32 +22,51 @@ internal sealed class TextLineProposer : IRegionProposer
     public IReadOnlyList<PixelBox> Propose(ForegroundImage image) => [.. Find(image).Select(g => g.Box)];
 
     /// <summary>The characters of a page, with their lines and the spaces between words.</summary>
+    /// <remarks>
+    /// A space is a gap wider than half the line's typical character height (the line's band is no measure: tall
+    /// letters, descenders and Arabic dots make it far taller than a character). A line whose characters are much
+    /// smaller than the page's (fine print at the paper's edge, specks) is left out.
+    /// </remarks>
     public List<Glyph> Find(ForegroundImage image)
     {
         int width = image.Width, height = image.Height;
-        var glyphs = new List<Glyph>();
-        var lines = MergeThin(Runs([.. Enumerable.Range(0, height).Select(y => Count(image, y, 0, width, horizontal: true))], minGap: 2, minLength: 1));
-        foreach (var (lineIndex, (top, bottom)) in lines.Index())
+        var lines = new List<List<PixelBox>>();
+        foreach (var (top, bottom) in MergeThin(Runs([.. Enumerable.Range(0, height).Select(y => Count(image, y, 0, width, horizontal: true))], minGap: 2, minLength: 1)))
         {
-            int lineHeight = bottom - top;
             var columns = Enumerable.Range(0, width).Select(x => Count(image, x, top, bottom, horizontal: false)).ToArray();
-            int previousRight = -1;
-            foreach (var (left, right) in Split(Runs(columns, minGap: 1, minLength: 1), columns, lineHeight))
+            var boxes = new List<PixelBox>();
+            foreach (var (left, right) in Split(Runs(columns, minGap: 1, minLength: 1), columns, bottom - top))
             {
                 // The character's own rows within the line.
                 int charTop = bottom, charBottom = top;
                 for (int y = top; y < bottom; y++)
                     for (int x = left; x < right; x++)
                         if (image.IsForeground(x, y)) { charTop = Math.Min(charTop, y); charBottom = Math.Max(charBottom, y + 1); }
-                if (charBottom <= charTop || (right - left) * (charBottom - charTop) < 6)
-                    continue;   // a speck
-
-                bool space = previousRight >= 0 && left - previousRight > 0.4 * lineHeight;
-                previousRight = right;
-                glyphs.Add(new Glyph(lineIndex, new PixelBox(left, charTop, right - left, charBottom - charTop), space));
+                if (charBottom > charTop && (right - left) * (charBottom - charTop) >= 6)   // else a speck
+                    boxes.Add(new PixelBox(left, charTop, right - left, charBottom - charTop));
             }
+            if (boxes.Count > 0)
+                lines.Add(boxes);
+        }
+
+        int page = Median(lines.SelectMany(l => l.Select(b => b.Height)));
+        var glyphs = new List<Glyph>();
+        foreach (var boxes in lines)
+        {
+            int typical = Median(boxes.Select(b => b.Height));
+            if (typical < 0.4 * page)
+                continue;
+            int line = glyphs.Count == 0 ? 0 : glyphs[^1].Line + 1;
+            for (int i = 0; i < boxes.Count; i++)
+                glyphs.Add(new Glyph(line, boxes[i], SpaceBefore: i > 0 && boxes[i].X - boxes[i - 1].Right > 0.5 * typical));
         }
         return glyphs;
+    }
+
+    private static int Median(IEnumerable<int> values)
+    {
+        var sorted = values.Order().ToArray();
+        return sorted.Length == 0 ? 0 : sorted[sorted.Length / 2];
     }
 
     // Row bands much thinner than a text line (the dots above and below Arabic letters, a stray mark) join the nearer
