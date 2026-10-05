@@ -231,7 +231,7 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
             words[^1].Add(i);
         }
 
-        var visual = words.Select(w => WordInContext([.. w.Select(i => answers[i])], script, byText)).ToList();
+        var visual = words.Select(w => Words.InContext([.. w.Select(i => answers[i])], script, byText)).ToList();
         lines.Add((script, TextOrder.Logical(visual, rightToLeft: script == Script.Arabic)));
 
         if (show)
@@ -249,37 +249,6 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
     return lines;
 }
 
-// A word read within its line's script. Each character becomes its likeliest character of that script; then, in a
-// word of mostly letters, a digit becomes the likeliest of the letters it looks like (1 -> I or L, 0 -> O or D,
-// ١ -> ا), or else its likeliest letter, and in a word of mostly digits the other way round. The model's own
-// probabilities choose among look-alikes: a 1 among letters is as often an L as an I. A Latin word then takes the case
-// of most of its letters.
-static string WordInContext(IReadOnlyList<IReadOnlyList<ClassScore>> word, Script script, Dictionary<string, CharacterClass> byText)
-{
-    IEnumerable<CharacterClass> Candidates(IReadOnlyList<ClassScore> a) => a.Select(s => byText[s.Class]).Where(c => c.Script == script);
-    var chars = word.Select(a => Candidates(a).First()).ToArray();
-    int digits = chars.Count(c => c.IsDigit);
-    for (int i = 0; i < chars.Length; i++)
-    {
-        if (digits * 2 < chars.Length && chars[i].IsDigit)
-            chars[i] = LikeliestOf(word[i], LooksLikeLetter.GetValueOrDefault(chars[i].Text), byText) ?? Candidates(word[i]).First(c => !c.IsDigit);
-        else if (digits * 2 > chars.Length && !chars[i].IsDigit)
-            chars[i] = LikeliestOf(word[i], LooksLikeDigit.GetValueOrDefault(chars[i].Text), byText) ?? Candidates(word[i]).First(c => c.IsDigit);
-    }
-
-    string text = string.Concat(chars.Select(c => c.Text));
-    if (script != Script.Latin)
-        return text;
-    var letters = text.Where(char.IsLetter).ToArray();
-    bool upper = letters.Count(char.IsUpper) * 2 >= letters.Length;
-    return upper ? text.ToUpperInvariant() : text.ToLowerInvariant();
-}
-
-// The likeliest of some characters (look-alikes) by the model's probabilities, or null when none is a class.
-static CharacterClass? LikeliestOf(IReadOnlyList<ClassScore> answer, string[]? options, Dictionary<string, CharacterClass> byText) =>
-    options is null ? null
-        : answer.Where(s => options.Contains(s.Class) && byText.ContainsKey(s.Class)).Select(s => byText[s.Class]).FirstOrDefault();
-
 // Latin is compared without case (EMNIST Balanced shares one class between c and C...), with single spaces.
 static string Comparable(string text) =>
     string.Join(' ', text.ToUpperInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries));
@@ -296,21 +265,4 @@ static int Levenshtein(string a, string b)
         previous = current;
     }
     return previous[b.Length];
-}
-
-// Characters that handwriting makes hard to tell apart, for words whose kind (letters or digits) is known.
-internal static partial class Program
-{
-    private static readonly Dictionary<string, string[]> LooksLikeLetter = new()
-    {
-        ["0"] = ["O", "D"], ["1"] = ["I", "L"], ["2"] = ["Z"], ["5"] = ["S"], ["6"] = ["G", "b"], ["8"] = ["B"], ["9"] = ["g", "q"],
-        ["١"] = ["ا"], ["٥"] = ["ه"],
-    };
-
-    private static readonly Dictionary<string, string[]> LooksLikeDigit = new()
-    {
-        ["O"] = ["0"], ["D"] = ["0"], ["I"] = ["1"], ["L"] = ["1"], ["Z"] = ["2"], ["S"] = ["5"], ["G"] = ["6"], ["b"] = ["6"],
-        ["B"] = ["8"], ["g"] = ["9"], ["q"] = ["9"],
-        ["ا"] = ["١"], ["ه"] = ["٥"],
-    };
 }

@@ -25,9 +25,11 @@ How it works:
    its own. A letter's dots sit within its width, so they stay part of the letter.
 3. **One script per line.** Some characters look alike across scripts: `V`/`٧`, `l`/`ا`, `0`/`٥`/`ه`. So each line takes
    the script that most of its probability is on, and every character on it is then read within that script.
-4. **Word context**, per script: in a word of mostly letters, a digit becomes the likeliest of the letters it looks
+4. **Word context** ([`Words.cs`](Words.cs)), per script: a word is letters or digits by the probability its
+   characters put on each, summed over the word. So `HELLO` stays a word even when the model's likeliest reading of
+   both `L`s is `1` and of the `O` is `0`. In a word of letters, a digit becomes the likeliest of the letters it looks
    like, by the model's own probabilities (`1` → `I` or `L`, `0` → `O` or `D`, `١` → `ا`, `٥` → `ه`). In a word of
-   mostly digits it works the other way round. English words then take one case.
+   digits it works the other way round. English words then take one case.
 5. **Reading order** ([`TextOrder.cs`](TextOrder.cs)). Arabic lines are read right to left: the words from right to
    left and each word's letters from right to left, but numbers keep their digits left to right, as Arabic writes them.
 
