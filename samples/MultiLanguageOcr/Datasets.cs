@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO.Compression;
 using CnnSamples.Shared;
 using Idrak.Data;
+using Idrak.Vision;
 
 namespace MultiLanguageOcr;
 
@@ -70,7 +71,7 @@ internal static class Datasets
     {
         var (images, labels) = EmnistArchive.ReadSplit("balanced", split, folders);
         var picked = TestImages.RandomSubset(labels.Length, Math.Min(count, labels.Length));
-        return new([.. picked.Select(i => PageReader.Renormalize(Row(images, i), Size, Size))], [.. picked.Select(i => labels[i])]);
+        return new([.. picked.Select(i => Frame(Row(images, i), Size))], [.. picked.Select(i => labels[i])]);
     }
 
     // A Kaggle archive's CSV pair: images one per line (rows x rows values, 0-255) and labels.
@@ -88,7 +89,7 @@ internal static class Datasets
             throw new InvalidDataException($"{archive}.zip: {images.Length} {split} images but {labels.Length} labels.");
 
         var picked = TestImages.RandomSubset(labels.Length, Math.Min(count ?? labels.Length, labels.Length));
-        return new([.. picked.Select(i => PageReader.Renormalize(Upright(images[i], rows, columnMajor), rows, rows))], [.. picked.Select(i => labels[i])]);
+        return new([.. picked.Select(i => Frame(Upright(images[i], rows, columnMajor), rows))], [.. picked.Select(i => labels[i])]);
     }
 
     // The image upright (a column-by-column image is transposed), with ink high (white on black) whichever way the file has it.
@@ -116,6 +117,16 @@ internal static class Datasets
             if (numeric && cells.Length > 0)
                 yield return values;   // a header line, if any, is skipped
         }
+    }
+
+    // A data set's image framed by Idrak's ContentFrame the way the RegionClassifier frames a character cut from a page:
+    // cropped to its ink, centred and scaled to 28 x 28. Characters from EMNIST, AHCD's 32 x 32 and MADBase then look
+    // alike, and like the characters of a page.
+    private static float[] Frame(float[] image, int rows)
+    {
+        var framed = new float[Size * Size];
+        ContentFrame.Fit(image, rows, rows, framed, Size);
+        return framed;
     }
 
     private static float[] Row(float[,] images, int index)

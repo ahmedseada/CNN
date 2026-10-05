@@ -7,6 +7,7 @@ using Idrak.Inference;
 using Idrak.Layers;
 using Idrak.Optimizers;
 using Idrak.Training;
+using Idrak.Vision;
 using MultiLanguageOcr;
 
 // MultiLanguageOcr: reads pages of handwritten characters in English and Arabic. One convolutional network knows 85
@@ -200,17 +201,18 @@ void Ocr(SampleOptions o)
 }
 
 // The lines of a page image, each with its script and its text in reading order. Also writes them to a .txt file.
+// Idrak's RegionClassifier separates the ink, frames each character the layout finds and classifies them in batches.
 List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool show)
 {
     if (!File.Exists(modelPath))
         throw new FileNotFoundException($"No model at '{modelPath}'. Run 'dotnet run -- train' first.");
-    var saved = Predictor.Load(modelPath);
-    using var predictor = saved.Classes(saved.StoredClasses!).Build();
-    var byText = Characters.FromStored(saved.StoredClasses!).ToDictionary(c => c.Text);
+    using var classifier = RegionClassifier.Load(modelPath).Build();
+    var byText = Characters.FromStored(classifier.Classes).ToDictionary(c => c.Text);
 
-    var image = ImageCodecs.Decode(path);
-    var glyphs = PageReader.Read(image.Resize(1, image.Height, image.Width), image.Width, image.Height);
-    var answers = predictor.Predict([.. glyphs.Select(g => g.Image)]);
+    var page = classifier.Foreground(ImageCodecs.Decode(path));
+    var glyphs = new TextLineProposer().Find(page);
+    var found = classifier.Classify(page, [.. glyphs.Select(g => g.Box)]);
+    var answers = Enumerable.Range(0, found.Count).Select(i => found.Top(i, found.Classes.Count)).ToArray();
     Console.WriteLine($"Found {glyphs.Count} characters on {glyphs.Select(g => g.Line).Distinct().Count()} lines");
 
     var lines = new List<(Script, string)>();
@@ -219,7 +221,7 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
         var indices = line.ToList();
         // The line's script: the one most of its probability is on.
         var script = Enum.GetValues<Script>().MaxBy(s =>
-            indices.Sum(i => answers[i].Scores.Where(c => byText[c.Class].Script == s).Sum(c => c.Score)));
+            indices.Sum(i => answers[i].Where(c => byText[c.Class].Script == s).Sum(c => c.Score)));
 
         var words = new List<List<int>>();
         foreach (int i in indices)
@@ -233,11 +235,13 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
         lines.Add((script, TextOrder.Logical(visual, rightToLeft: script == Script.Arabic)));
 
         if (show)
-            foreach (int i in indices.OrderBy(i => answers[i].Probability).Take(1))
+            foreach (int i in indices.OrderBy(i => found.Confidence(i)).Take(1))
             {
-                ConsoleReport.PrintImage(glyphs[i].Image, Datasets.Size, Datasets.Size);
-                Console.WriteLine($"least certain on line {glyphs[i].Line + 1}: {answers[i].Class} ({answers[i].Probability:P0}), " +
-                    $"else {string.Join(", ", answers[i].Scores.Skip(1).Take(2).Select(s => $"{s.Class} {s.Score:P0}"))}");
+                var image = new float[Datasets.Size * Datasets.Size];
+                ContentFrame.Extract(page, glyphs[i].Box, image, Datasets.Size);   // the character as the model saw it
+                ConsoleReport.PrintImage(image, Datasets.Size, Datasets.Size);
+                Console.WriteLine($"least certain on line {glyphs[i].Line + 1}: {answers[i][0].Class} ({answers[i][0].Score:P0}), " +
+                    $"else {string.Join(", ", answers[i].Skip(1).Take(2).Select(s => $"{s.Class} {s.Score:P0}"))}");
             }
     }
 
@@ -250,9 +254,9 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
 // ١ -> ا), or else its likeliest letter, and in a word of mostly digits the other way round. The model's own
 // probabilities choose among look-alikes: a 1 among letters is as often an L as an I. A Latin word then takes the case
 // of most of its letters.
-static string WordInContext(IReadOnlyList<ClassPrediction> word, Script script, Dictionary<string, CharacterClass> byText)
+static string WordInContext(IReadOnlyList<IReadOnlyList<ClassScore>> word, Script script, Dictionary<string, CharacterClass> byText)
 {
-    IEnumerable<CharacterClass> Candidates(ClassPrediction a) => a.Scores.Select(s => byText[s.Class]).Where(c => c.Script == script);
+    IEnumerable<CharacterClass> Candidates(IReadOnlyList<ClassScore> a) => a.Select(s => byText[s.Class]).Where(c => c.Script == script);
     var chars = word.Select(a => Candidates(a).First()).ToArray();
     int digits = chars.Count(c => c.IsDigit);
     for (int i = 0; i < chars.Length; i++)
@@ -272,9 +276,9 @@ static string WordInContext(IReadOnlyList<ClassPrediction> word, Script script, 
 }
 
 // The likeliest of some characters (look-alikes) by the model's probabilities, or null when none is a class.
-static CharacterClass? LikeliestOf(ClassPrediction answer, string[]? options, Dictionary<string, CharacterClass> byText) =>
+static CharacterClass? LikeliestOf(IReadOnlyList<ClassScore> answer, string[]? options, Dictionary<string, CharacterClass> byText) =>
     options is null ? null
-        : answer.Scores.Where(s => options.Contains(s.Class) && byText.ContainsKey(s.Class)).Select(s => byText[s.Class]).FirstOrDefault();
+        : answer.Where(s => options.Contains(s.Class) && byText.ContainsKey(s.Class)).Select(s => byText[s.Class]).FirstOrDefault();
 
 // Latin is compared without case (EMNIST Balanced shares one class between c and C...), with single spaces.
 static string Comparable(string text) =>
