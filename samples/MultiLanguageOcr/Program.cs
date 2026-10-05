@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using CnnSamples.Shared;
 using Idrak;
@@ -69,7 +70,7 @@ return 0;
 void Train(SampleOptions o)
 {
     var (trainPart, testPart, classes) = Datasets.Load(o.DataFolder, o.TrainSamples);
-    var train = Datasets.ToDataset(trainPart, classes);
+    var train = Datasets.ToSource(trainPart, classes);    // framed as read: a byte per stored pixel, not 784 floats an image
     var test = Datasets.ToDataset(testPart, classes);
     Console.WriteLine($"{train.Count:N0} training and {test.Count:N0} test images, {classes.Length} characters");
 
@@ -139,7 +140,7 @@ void Train(SampleOptions o)
         int i = Array.IndexOf(testPart.Labels, c.Index);
         if (i < 0)
             continue;
-        ConsoleReport.PrintImage(testPart.Images[i], Datasets.Size, Datasets.Size);
+        ConsoleReport.PrintImage(testPart.Image(i), Datasets.Size, Datasets.Size);
         Console.WriteLine($"label {c.Text}  predicted {classes[predicted[i]].Text}");
     }
 
@@ -165,12 +166,12 @@ void Demo(SampleOptions o)
         if (!byText.TryGetValue(key, out var c) || pools[c.Index].Count == 0)
             throw new ArgumentException($"'{ch}' is not one of the model's characters: {string.Concat(classes.Select(k => k.Text))}");
         var pool = pools[c.Index];
-        return PageWriter.Crop(testPart.Images[pool[random.Next(pool.Count)]], Datasets.Size, Datasets.Size);
+        return PageWriter.Crop(testPart.Image(pool[random.Next(pool.Count)]), Datasets.Size, Datasets.Size);
     }
 
     var (log, session) = InferenceLog.Start(console: o.Telemetry);
     using var telemetry = session;
-    var (classifier, modelByText, _) = LoadModel(o.ModelPath);
+    var (classifier, reader, _) = LoadModel(o.ModelPath);
     using var model = classifier;
 
     int pages = Math.Max(o.ExportCount, 1);
@@ -186,7 +187,7 @@ void Demo(SampleOptions o)
         if (pages == 1)
             Console.WriteLine($"Wrote a {width} x {height} page of handwriting to {Path.GetFullPath(page)}");
 
-        var lines = ReadPage(page, classifier, modelByText, report: pages == 1, bench: o.Bench, log: log).Lines;
+        var lines = ReadPage(page, classifier, reader, report: pages == 1, bench: o.Bench, log: log).Lines;
         var expected = text.Replace("\r", "").Split('\n');
         if (pages == 1)
             Console.WriteLine();
@@ -242,13 +243,13 @@ void Ocr(SampleOptions o)
     var crop = o.Crop is { } c ? PhotoPage.ParseCrop(c) : (PixelBox?)null;
     var (log, session) = InferenceLog.Start(console: o.Telemetry);
     using var telemetry = session;
-    var (classifier, byText, loadMs) = LoadModel(o.ModelPath);
+    var (classifier, reader, loadMs) = LoadModel(o.ModelPath);
     using var model = classifier;
     Console.WriteLine($"Loaded the model in {loadMs:F0} ms");
 
     if (!Directory.Exists(o.ImagePath))
     {
-        var page = ReadPage(o.ImagePath, classifier, byText, show: o.Show, report: true, bench: o.Bench, crop: crop, photo: o.Photo, log: log);
+        var page = ReadPage(o.ImagePath, classifier, reader, show: o.Show, report: true, bench: o.Bench, crop: crop, photo: o.Photo, log: log);
         foreach (var line in page.Lines)
             Console.WriteLine($"[{(line.Script == Script.Arabic ? "ar" : "en")}] {line.Text}");
         Console.WriteLine($"Also written to {Path.GetFullPath(Path.ChangeExtension(o.ImagePath, ".txt"))}");
@@ -269,7 +270,7 @@ void Ocr(SampleOptions o)
     var pages = new List<(string File, double Ms, int Characters)>();
     foreach (var file in files)
     {
-        var page = ReadPage(file, classifier, byText, show: o.Show, crop: crop, photo: o.Photo, log: log);
+        var page = ReadPage(file, classifier, reader, show: o.Show, crop: crop, photo: o.Photo, log: log);
         pages.Add((file, page.Ms, page.Characters));
         Console.WriteLine($"{Path.GetFileName(file)}: {page.Characters} characters on {page.Lines.Count} lines in {page.Ms:F0} ms -> {Path.GetFileName(Path.ChangeExtension(file, ".txt"))}");
         foreach (var line in page.Lines)
@@ -287,13 +288,13 @@ void Ocr(SampleOptions o)
 }
 
 // The model a run reads pages with: loaded once, however many pages follow.
-static (RegionClassifier Classifier, Dictionary<string, CharacterClass> ByText, double LoadMs) LoadModel(string modelPath)
+static (RegionClassifier Classifier, Words Words, double LoadMs) LoadModel(string modelPath)
 {
     if (!File.Exists(modelPath))
         throw new FileNotFoundException($"No model at '{modelPath}'. Run 'dotnet run -- train' first.");
     var clock = Stopwatch.StartNew();
     var classifier = RegionClassifier.Load(modelPath).Build();
-    return (classifier, Characters.FromStored(classifier.Classes).ToDictionary(c => c.Text), clock.Elapsed.TotalMilliseconds);
+    return (classifier, new Words(Characters.FromStored(classifier.Classes)), clock.Elapsed.TotalMilliseconds);
 }
 
 // The lines of a page image, each with its script and its text in reading order, and how long the page took (the
@@ -302,7 +303,7 @@ static (RegionClassifier Classifier, Dictionary<string, CharacterClass> ByText, 
 // The model's time comes from Idrak's inference telemetry (`log`); the stages around it are timed here (Idrak
 // publishes no events for decoding, the ink, the layout or the framing).
 (List<(Script Script, string Text)> Lines, double Ms, int Characters) ReadPage(string path, RegionClassifier classifier,
-    Dictionary<string, CharacterClass> byText, bool show = false, bool report = false, bool bench = false,
+    Words reader, bool show = false, bool report = false, bool bench = false,
     PixelBox? crop = null, bool? photo = null, InferenceLog? log = null)
 {
     var clock = Stopwatch.StartNew();
@@ -317,21 +318,22 @@ static (RegionClassifier Classifier, Dictionary<string, CharacterClass> ByText, 
     if (report && prepared.Photo)
         Console.WriteLine($"Read as a photo: one threshold took {prepared.GlobalInk:P0} of the pixels as ink; a local threshold " +
             $"took {prepared.Ink:P1}, after removing {prepared.RuledPixels:N0} ruled-line pixels and {prepared.SurroundingRegions} regions around the page");
-    var glyphs = new TextLineProposer().Find(page);
+    var glyphs = TextLines.Find(page);
     Lap("lines and characters");
     int before = log?.Count ?? 0;
-    var found = classifier.Classify(page, [.. glyphs.Select(g => g.Box)]);
+    var boxes = BatchBoxes(glyphs);
+    var found = classifier.Classify(page, boxes);
     Lap("classify (first run)");
     if (log is not null)
         model.Add(("classify (first run)", log.Since(before)));
     if (bench && log is not null && glyphs.Count > 0)
     {
         before = log.Count;
-        classifier.Classify(page, [.. glyphs.Select(g => g.Box)]);           // again, warm: the speed of every later page
+        classifier.Classify(page, boxes);                                    // again, warm: the speed of every later page
         Lap("classify (warm)");
         model.Add(("classify (warm)", log.Since(before)));
     }
-    var answers = Enumerable.Range(0, found.Count).Select(i => found.Top(i, found.Classes.Count)).ToArray();
+    Scores scores = i => found.Probabilities(i);                         // read in place: no sorted list per character
     if (report)
         Console.WriteLine($"Found {glyphs.Count} characters on {glyphs.Select(g => g.Line).Distinct().Count()} lines");
 
@@ -351,8 +353,7 @@ static (RegionClassifier Classifier, Dictionary<string, CharacterClass> ByText, 
         }
 
         // The line's script: the one most of its probability is on.
-        var script = Enum.GetValues<Script>().MaxBy(s =>
-            indices.Where(i => !Dash(i)).Sum(i => answers[i].Where(c => byText[c.Class].Script == s).Sum(c => c.Score)));
+        var script = Enum.GetValues<Script>().MaxBy(s => indices.Where(i => !Dash(i)).Sum(i => reader.Mass(found.Probabilities(i), s)));
 
         var words = new List<List<int>>();
         foreach (int i in indices)
@@ -372,14 +373,14 @@ static (RegionClassifier Classifier, Dictionary<string, CharacterClass> ByText, 
                 end++;
             if (end - start >= 2)
             {
-                bool number = Words.IsNumber(words[start..end].Select(w => answers[w[0]]), script, byText);
+                bool number = reader.IsNumber([.. words[start..end].Select(w => w[0])], scores, script);
                 for (int k = start; k < end; k++)
                     kind[k] = number;
             }
             start = Math.Max(end, start + 1);
         }
 
-        var visual = words.Select((w, k) => Dash(w[0]) ? "-" : Words.InContext([.. w.Select(i => answers[i])], script, byText, kind[k])).ToList();
+        var visual = words.Select((w, k) => Dash(w[0]) ? "-" : reader.InContext(CollectionsMarshal.AsSpan(w), scores, script, kind[k])).ToList();
         lines.Add((script, TextOrder.Logical(visual, rightToLeft: script == Script.Arabic)));
 
         if (show)
@@ -388,8 +389,9 @@ static (RegionClassifier Classifier, Dictionary<string, CharacterClass> ByText, 
                 var frame = new float[Datasets.Size * Datasets.Size];
                 ContentFrame.Extract(page, glyphs[i].Box, frame, Datasets.Size);   // the character as the model saw it
                 ConsoleReport.PrintImage(frame, Datasets.Size, Datasets.Size);
-                Console.WriteLine($"least certain on line {glyphs[i].Line + 1}: {answers[i][0].Class} ({answers[i][0].Score:P0}), " +
-                    $"else {string.Join(", ", answers[i].Skip(1).Take(2).Select(s => $"{s.Class} {s.Score:P0}"))}");
+                var top = found.Top(i, 3);
+                Console.WriteLine($"least certain on line {glyphs[i].Line + 1}: {top[0].Class} ({top[0].Score:P0}), " +
+                    $"else {string.Join(", ", top.Skip(1).Select(s => $"{s.Class} {s.Score:P0}"))}");
             }
     }
 
@@ -398,6 +400,23 @@ static (RegionClassifier Classifier, Dictionary<string, CharacterClass> ByText, 
     if (report)
         PrintTimes(times, model, glyphs.Count, image.Width, image.Height);
     return (lines, times.Where(t => t.Stage != "classify (warm)").Sum(t => t.Ms), glyphs.Count);
+}
+
+// The boxes to classify: the page's characters, padded (with copies of the first) to a whole number of 64. Pages of 93,
+// 101 or 67 characters then all run batches of 128: the same tensor shapes on every page, so Idrak's memory pool, which
+// reuses a freed block only for a tensor of the same size, reuses them instead of keeping one of every size. On five
+// test pages (CPU): 1,035 MB cached and a 1,282 MB peak without padding, 452 MB and 699 MB with it, and faster (blocks
+// reused, not allocated and cleared); padding to 32 kept 777 MB, to 128 418 MB but ran slower on small pages. The
+// padding's predictions are never read; the text read is the same.
+static PixelBox[] BatchBoxes(List<Glyph> glyphs)
+{
+    const int Unit = 64;
+    int count = glyphs.Count;
+    int padded = (count + Unit - 1) / Unit * Unit;
+    var boxes = new PixelBox[padded];
+    for (int i = 0; i < padded; i++)
+        boxes[i] = glyphs[i < count ? i : 0].Box;
+    return boxes;
 }
 
 // Where the time went: each stage's wall time and, for the model, Idrak's inference telemetry (the device's own time

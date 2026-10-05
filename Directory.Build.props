@@ -5,5 +5,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- The SDK's performance analyzers (docs/optimization.md in Idrak, rule 65), as errors like every warning. -->
+    <AnalysisModePerformance>All</AnalysisModePerformance>
+    <!-- CA1814 (prefer jagged arrays) is wrong for this code: Idrak's Dataset takes float[,], and one contiguous block
+         beats an array per row for memory and for vectorized loops (rules 37 and 72). -->
+    <NoWarn>$(NoWarn);CA1814</NoWarn>
   </PropertyGroup>
 </Project>

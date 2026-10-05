@@ -17,7 +17,7 @@ How it works:
    Every training image is framed by Idrak's `ContentFrame.Fit`: cropped to its ink, centred and scaled to 28 x 28,
    the same way Idrak frames a character cut from a page. So EMNIST's 28 x 28, AHCD's 32 x 32 and MADBase's images
    all look alike to the model, and like the characters of a page.
-2. **Page layout** ([`TextLines.cs`](TextLines.cs)), plugged into Idrak's `RegionClassifier` as an `IRegionProposer`.
+2. **Page layout** ([`TextLines.cs`](TextLines.cs)), whose boxes go to Idrak's `RegionClassifier`.
    Idrak separates the ink from the paper (either polarity, Otsu's threshold), frames each character and classifies
    them in batches on the device. The sample supplies the part that is specific to text: it finds lines and
    characters by the gaps between them, like DocumentOcr's. One addition for Arabic: a band of rows much thinner than
@@ -225,7 +225,7 @@ word, which a model of single characters cannot read.
 - **Framing** (`Idrak.Vision`): `ContentFrame.Fit` frames the training images; `RegionClassifier` frames the
   characters of a page the same way, straight into one batch buffer.
 - **Inference** (`Idrak.Vision`): `RegionClassifier.Load("multilang.ikm")` reads the package's model, classes and
-  input size. `Foreground(image)` separates the ink, `TextLineProposer` finds the characters, and one
-  `Classify(page, boxes)` call classifies all of them in batches. `Top(i, n)` gives every class's probability: summed
-  per script it picks the line's script, and filtered to that script it picks each character.
+  input size. `Foreground(image)` separates the ink, `TextLines` finds the characters (with their lines and word spaces), and one
+  `Classify(page, boxes)` call classifies all of them in batches. `Probabilities(i)` gives every class's probability,
+  read in place (`Words.cs`): summed per script it picks the line's script, and within that script each character.
 - **Images**: `ImageCodecs.Decode` for the page (PNG, BMP, PGM, colour or grey).

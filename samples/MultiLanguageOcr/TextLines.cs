@@ -1,3 +1,4 @@
+using System.Buffers;
 using Idrak.Vision;
 
 namespace MultiLanguageOcr;
@@ -8,19 +9,17 @@ internal sealed record Glyph(int Line, PixelBox Box, bool SpaceBefore);
 /// <summary>
 /// Finds the characters of a page for Idrak's <see cref="RegionClassifier"/>: splits the page's foreground into text
 /// lines and each line into characters by the gaps between them, in reading order on the page (lines top to bottom,
-/// characters left to right). Idrak extracts the foreground and frames and classifies the boxes; this layout is the
-/// application's part.
+/// characters left to right), with the spaces between words. Idrak frames and classifies the boxes; this layout is the
+/// application's part. (It is no <see cref="IRegionProposer"/>: the reader needs the lines and spaces, which a list of
+/// boxes does not carry.)
 /// </summary>
 /// <remarks>
 /// This works on clean pages with lines of separate characters: printed-style handwriting, scans of forms, the demo's
 /// pages, in any script whose characters stand apart (Latin capitals, digits, isolated Arabic letters with their dots).
 /// Joined-up handwriting would need a model that reads whole words.
 /// </remarks>
-internal sealed class TextLineProposer : IRegionProposer
+internal static class TextLines
 {
-    /// <inheritdoc />
-    public IReadOnlyList<PixelBox> Propose(ForegroundImage image) => [.. Find(image).Select(g => g.Box)];
-
     /// <summary>The characters of a page, with their lines and the spaces between words.</summary>
     /// <remarks>
     /// A space is a gap wider than half the line's typical character height (the line's band is no measure: tall
@@ -28,13 +27,26 @@ internal sealed class TextLineProposer : IRegionProposer
     /// smaller than the page's (fine print at the paper's edge, specks, a printed header) is left out; the page's
     /// typical height weighs each line by its ink, so the writing sets it.
     /// </remarks>
-    public List<Glyph> Find(ForegroundImage image)
+    public static List<Glyph> Find(ForegroundImage image)
     {
         int width = image.Width, height = image.Height;
 
         // One byte per pixel, 1 on ink, read row by row from here on: each row's ink is counted once, a line's columns are
         // summed a row at a time (in memory order), and a character's own rows are found with vectorized searches.
-        var mask = new byte[width * height];
+        var mask = ArrayPool<byte>.Shared.Rent(width * height);               // scratch: every entry is written below
+        try
+        {
+            return Find(image, mask);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(mask);
+        }
+    }
+
+    private static List<Glyph> Find(ForegroundImage image, byte[] mask)
+    {
+        int width = image.Width, height = image.Height;
         var values = image.Values;
         float threshold = image.Threshold;
         var rows = new int[height];
@@ -42,7 +54,11 @@ internal sealed class TextLineProposer : IRegionProposer
         {
             int count = 0;
             for (int x = 0, i = y * width; x < width; x++, i++)
-                if (values[i] > threshold) { mask[i] = 1; count++; }
+            {
+                bool ink = values[i] > threshold;
+                mask[i] = ink ? (byte)1 : (byte)0;
+                count += ink ? 1 : 0;
+            }
             rows[y] = count;
         }
 

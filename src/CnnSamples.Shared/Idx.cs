@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Compression;
 
@@ -12,48 +13,73 @@ public static class Idx
     /// </summary>
     public static float[,] ReadImages(Stream gzip, int rows, int columns, bool transpose = false)
     {
-        var span = Decompress(gzip).AsSpan();
-        if (BinaryPrimitives.ReadInt32BigEndian(span) != 2051)
+        var (pixels, count) = ReadImageBytes(gzip, rows, columns, transpose);
+        int size = rows * columns;
+        var images = new float[count, size];
+        for (int i = 0; i < count; i++)
+            for (int p = 0; p < size; p++)
+                images[i, p] = pixels[i * size + p] / 255f;
+        return images;
+    }
+
+    /// <summary>
+    /// Images as their bytes, one per pixel, image after image (upright: <paramref name="transpose"/> flips rows and
+    /// columns as the file is read): a quarter of the memory of <see cref="ReadImages"/>, read straight from the stream
+    /// into one array of the exact size.
+    /// </summary>
+    public static (byte[] Pixels, int Count) ReadImageBytes(Stream gzip, int rows, int columns, bool transpose = false)
+    {
+        using var stream = new GZipStream(gzip, CompressionMode.Decompress, leaveOpen: true);
+        Span<byte> header = stackalloc byte[16];
+        stream.ReadExactly(header);
+        if (BinaryPrimitives.ReadInt32BigEndian(header) != 2051)
             throw new InvalidDataException("Not an IDX image file (magic number 2051).");
 
-        int count = BinaryPrimitives.ReadInt32BigEndian(span[4..]);
-        int fileRows = BinaryPrimitives.ReadInt32BigEndian(span[8..]);
-        int fileColumns = BinaryPrimitives.ReadInt32BigEndian(span[12..]);
+        int count = BinaryPrimitives.ReadInt32BigEndian(header[4..]);
+        int fileRows = BinaryPrimitives.ReadInt32BigEndian(header[8..]);
+        int fileColumns = BinaryPrimitives.ReadInt32BigEndian(header[12..]);
         if (fileRows != rows || fileColumns != columns)
             throw new InvalidDataException($"The file has {fileRows}x{fileColumns} images, expected {rows}x{columns}.");
 
-        int pixels = rows * columns;
-        var images = new float[count, pixels];
-        var data = span[16..];
-        for (int i = 0; i < count; i++)
+        int size = rows * columns;
+        var pixels = new byte[(long)count * size];
+        stream.ReadExactly(pixels);
+        if (transpose)
         {
-            var image = data.Slice(i * pixels, pixels);
-            for (int y = 0; y < rows; y++)
-                for (int x = 0; x < columns; x++)
-                    images[i, y * columns + x] = image[transpose ? x * rows + y : y * columns + x] / 255f;
+            var stored = ArrayPool<byte>.Shared.Rent(size);
+            try
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    var image = pixels.AsSpan(i * size, size);
+                    image.CopyTo(stored);
+                    for (int y = 0; y < rows; y++)
+                        for (int x = 0; x < columns; x++)
+                            image[y * columns + x] = stored[x * rows + y];
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(stored);
+            }
         }
-        return images;
+        return (pixels, count);
     }
 
     /// <summary>Labels, one byte each.</summary>
     public static int[] ReadLabels(Stream gzip)
     {
-        var span = Decompress(gzip).AsSpan();
-        if (BinaryPrimitives.ReadInt32BigEndian(span) != 2049)
+        using var stream = new GZipStream(gzip, CompressionMode.Decompress, leaveOpen: true);
+        Span<byte> header = stackalloc byte[8];
+        stream.ReadExactly(header);
+        if (BinaryPrimitives.ReadInt32BigEndian(header) != 2049)
             throw new InvalidDataException("Not an IDX label file (magic number 2049).");
 
-        int count = BinaryPrimitives.ReadInt32BigEndian(span[4..]);
-        var labels = new int[count];
-        for (int i = 0; i < count; i++)
-            labels[i] = span[8 + i];
+        var bytes = new byte[BinaryPrimitives.ReadInt32BigEndian(header[4..])];
+        stream.ReadExactly(bytes);
+        var labels = new int[bytes.Length];
+        for (int i = 0; i < bytes.Length; i++)
+            labels[i] = bytes[i];
         return labels;
-    }
-
-    private static byte[] Decompress(Stream compressed)
-    {
-        using var gzip = new GZipStream(compressed, CompressionMode.Decompress, leaveOpen: true);
-        using var memory = new MemoryStream();
-        gzip.CopyTo(memory);
-        return memory.ToArray();
     }
 }

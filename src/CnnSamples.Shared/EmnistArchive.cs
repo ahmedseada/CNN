@@ -27,6 +27,17 @@ public static class EmnistArchive
         return (Idx.ReadImages(images.Stream, Rows, Columns, transpose: true), Idx.ReadLabels(labels.Stream));
     }
 
+    /// <summary>
+    /// The images of one split as bytes, one per pixel, image after image (upright), and their labels: a quarter of the
+    /// memory of <see cref="ReadSplit"/>.
+    /// </summary>
+    public static (byte[] Images, int[] Labels) ReadSplitBytes(string name, string split, IReadOnlyList<string> folders)
+    {
+        using var images = Open($"emnist-{name}-{split}-images-idx3-ubyte.gz", folders);
+        using var labels = Open($"emnist-{name}-{split}-labels-idx1-ubyte.gz", folders);
+        return (Idx.ReadImageBytes(images.Stream, Rows, Columns, transpose: true).Pixels, Idx.ReadLabels(labels.Stream));
+    }
+
     /// <summary>The characters of a split's labels, from its mapping file (lines of "label ascii-code").</summary>
     public static Dictionary<int, char> ReadMapping(string name, IReadOnlyList<string> folders)
     {

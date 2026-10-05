@@ -68,12 +68,32 @@ of a page is not, so the sample still times it with a stopwatch.
 | The model's name is its type | `InferenceCompleted.Model` is the module's display name ("Sequential(5 layers)"), not the package it came from | The package name or a name given at load | | 0.3.2 |
 | No .NET metrics bridge | No `System.Diagnostics.Metrics` or `ActivitySource`, so `dotnet-counters` and OpenTelemetry see nothing | A hook that turns events into meters and activities, in the core or an optional package | Only when subscribed | 0.4.0 (optional package) |
 
+## From applying Idrak's optimization rules to MultiLanguageOcr
+
+Measured on a 4-core x64 container (CPU), with test archives in the real formats (EMNIST's `gzip.zip`, AHCD's and
+MADBase's CSV zips, filled with MNIST handwriting: 15,088 training and 2,716 test images) and five page photos. Every
+change was checked to give the same results (rule 71): the same loaded images and labels (a hash), the same losses,
+accuracies and trained weights, the same text of every page, the same demo, the same layout.
+
+| Rule | In the sample | Before | After | What Idrak should provide |
+|------|---------------|--------|-------|---------------------------|
+| 74, 75 (bytes, once) | Training images kept as the files' bytes, framed as read by an `ISampleSource` (`Datasets.Part`); IDX files read straight into one exact-size array | Loading 1.9-2.5 s, 283 MB allocated, 265-278 MB peak; every image held as floats twice, plus all of EMNIST as floats | 0.22 s, 33 MB, 121 MB; an epoch as fast (114.3 s against 114.8 s), the same losses and weights | A byte-backed image source (bytes, shape, a transform applied per read such as `ContentFrame.Reframe`), and `Dataset.FromClassLabels` without its extra copies (it flattens the `float[,]` into another array) |
+| 77 (memory that does not grow) | Each page's batch padded to a multiple of 64 characters (`BatchBoxes`), so tensor shapes repeat across pages | Five pages: 1,035 MB cached for 8 MB in use, 1,282 MB peak, 2.9 s | 452 MB cached, 699 MB peak, 1.6 s (blocks reused instead of allocated and cleared) | Pools that reuse blocks across nearby sizes (the CPU pool reuses only the exact length, the CUDA pool up to 25% larger) and a public trim; `CpuMemoryLimit` shrank the cache to 65 MB but not the process peak (1,340 MB: released arrays stay in the managed heap) |
+| 10, 44, 56 (pooled scratch) | The integral image, ruled-line arrays and layout mask rented and returned | Ink and layout of five pages, warm: 165 MB allocated, 217 ms | 90 MB, 219 ms | Span or pooled overloads: `Foreground.Grey` into a caller's buffer, `ForegroundImage` over a rented (longer) array or `Memory<float>`, `ConnectedComponents.Find` with a reusable label buffer; these make most of the remaining 90 MB |
+| 1, 6 (spans) | Word rules read each character's probabilities in place (`RegionPredictions.Probabilities`) | Every character's 85 classes sorted into a list of `ClassScore` | One pass per question, no list | `RegionPredictions` already serves spans; nothing more needed |
+| 65 (analyzers) | `AnalysisModePerformance` set to `All` in `Directory.Build.props`, as errors | — | Found a class whose interface nobody used (CA1812) and a method that could be static (CA1822); CA1814 (prefer jagged arrays) turned off with its reason: Idrak's `Dataset` takes `float[,]`, and a contiguous block beats an array per row | The same setting in Idrak |
+
+Still open: training on the test archives peaked at 4.2-4.3 GB resident for a model of 2 million weights and 15,088
+images of 28 x 28, before and after; the data is not the cause (it was 0.1 GB of it). The memory pool (batches of 128
+for training, of 512 for validation, a smaller last batch of each) is the first suspect; it needs measuring in Idrak
+with `MemoryUsage.Peak` (planned for 0.3.2).
+
 ## Stays in the samples
 
 - Ruled-line removal (notebook paper) and the page's surroundings by position (binding, cover, desk): specific to
   photographed pages of text. `PhotoPage` in MultiLanguageOcr.
-- Text-line layout (lines and characters by projection gaps, Arabic dots joined to their line): `TextLineProposer`, an
-  `IRegionProposer` plugged into Idrak's `RegionClassifier`.
+- Text-line layout (lines and characters by projection gaps, Arabic dots joined to their line): `TextLines`, whose
+  boxes go to Idrak's `RegionClassifier`.
 - Word context (letters or digits by probability, look-alike characters): `Words` in MultiLanguageOcr.
 
 ## Moved

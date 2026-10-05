@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using CnnSamples.Shared;
 using Idrak.Data;
 using Idrak.Vision;
@@ -22,8 +24,79 @@ internal static class Datasets
     public static string[] Folders(string dataFolder) =>
         [.. DataFiles.SearchFolders(dataFolder), Path.Combine("..", "DocumentOcr", "data"), Path.Combine("..", "LettersCnn", "data")];
 
-    /// <summary>Images (28 x 28, framed like characters cut from a page) and their labels in the joint class order.</summary>
-    public sealed record Part(float[][] Images, int[] Labels);
+    /// <summary>
+    /// One data set's images as its file stores them, one byte per pixel: <paramref name="Rows"/> x <paramref name="Rows"/>
+    /// each, row by row or (<paramref name="ColumnMajor"/>) column by column; <paramref name="Upright"/> says whether an
+    /// image whose mean is light is inverted to white on black when it is framed.
+    /// </summary>
+    internal sealed record Images(byte[] Pixels, int Rows, bool ColumnMajor, bool Upright);
+
+    /// <summary>
+    /// Images (framed 28 x 28 like characters cut from a page, when read) and their labels in the joint class order. The
+    /// pixels stay as the files store them, one byte each, and a part holds only which of them it uses: framing happens
+    /// as an image is read, with the same float steps as framing it ahead (the values come out bit for bit the same).
+    /// </summary>
+    public sealed class Part
+    {
+        private readonly (Images Source, int[] Picked, int Start)[] _segments;
+
+        internal Part((Images Source, int[] Picked)[] segments, int[] labels)
+        {
+            int start = 0;
+            _segments = new (Images, int[], int)[segments.Length];
+            for (int k = 0; k < segments.Length; k++)
+            {
+                _segments[k] = (segments[k].Source, segments[k].Picked, start);
+                start += segments[k].Picked.Length;
+            }
+            Labels = labels;
+        }
+
+        /// <summary>The labels, in the joint class order.</summary>
+        public int[] Labels { get; }
+
+        /// <summary>The number of images.</summary>
+        public int Count => Labels.Length;
+
+        /// <summary>Image <paramref name="index"/> framed into <paramref name="destination"/> (28 x 28 values in [0, 1]).</summary>
+        public void Frame(int index, Span<float> destination)
+        {
+            int k = _segments.Length - 1;
+            while (_segments[k].Start > index)
+                k--;
+            var (source, picked, start) = _segments[k];
+            int rows = source.Rows, pixels = rows * rows;
+            var raw = source.Pixels.AsSpan(picked[index - start] * pixels, pixels);
+            var image = ArrayPool<float>.Shared.Rent(pixels);
+            try
+            {
+                // Upright, ink high: as the file has it divided by 255 (transposed from column order), and inverted when
+                // mostly light; the same operations, in the same order, as before framing ahead of time.
+                float sum = 0;
+                for (int y = 0; y < rows; y++)
+                    for (int x = 0; x < rows; x++)
+                        sum += image[y * rows + x] = raw[source.ColumnMajor ? x * rows + y : y * rows + x] / 255f;
+                if (source.Upright && sum / pixels > 0.5f)
+                    for (int i = 0; i < pixels; i++)
+                        image[i] = 1f - image[i];
+                ContentFrame.Fit(image.AsSpan(0, pixels), rows, rows, destination, Size);
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(image);
+            }
+        }
+
+        /// <summary>Image <paramref name="index"/>, framed, in a new array (for printing and the demo's pages).</summary>
+        public float[] Image(int index)
+        {
+            var framed = new float[Size * Size];
+            Frame(index, framed);
+            return framed;
+        }
+
+        internal (Images Source, int[] Picked)[] Segments => [.. _segments.Select(s => (s.Source, s.Picked))];
+    }
 
     /// <summary>
     /// The joint training and test sets, at most <paramref name="perSource"/> images from each data set (random,
@@ -46,31 +119,54 @@ internal static class Datasets
         var lettersTest = Kaggle("ahcd1", "test", 32, folders, perSource, offset: arabicLetters - 1, columnMajor: true);
         var digitsTrain = training ? Kaggle("ahdd1", "train", 28, folders, perSource ?? 30_000, offset: arabicDigits, columnMajor: false) : none;   // labels 0-9
         var digitsTest = Kaggle("ahdd1", "test", 28, folders, perSource ?? 5_000, offset: arabicDigits, columnMajor: false);
-        Console.WriteLine($"  EMNIST {emnistTrain.Labels.Length:N0} + {emnistTest.Labels.Length:N0}, AHCD {lettersTrain.Labels.Length:N0} + {lettersTest.Labels.Length:N0}, " +
-            $"MADBase {digitsTrain.Labels.Length:N0} + {digitsTest.Labels.Length:N0} (training + test)");
+        Console.WriteLine($"  EMNIST {emnistTrain.Count:N0} + {emnistTest.Count:N0}, AHCD {lettersTrain.Count:N0} + {lettersTest.Count:N0}, " +
+            $"MADBase {digitsTrain.Count:N0} + {digitsTest.Count:N0} (training + test)");
 
         return (Join(emnistTrain, lettersTrain, lettersTrain, digitsTrain), Join(emnistTest, lettersTest, digitsTest), classes);
     }
 
-    /// <summary>A part as a [1, 28, 28] classification dataset over <paramref name="classes"/>.</summary>
+    /// <summary>
+    /// A part as a [1, 28, 28] classification source over <paramref name="classes"/> for a <see cref="DataLoader"/>:
+    /// each image framed as it is read, so a training set takes a byte per stored pixel instead of 28 x 28 floats per image.
+    /// </summary>
+    public static ISampleSource ToSource(Part part, CharacterClass[] classes) => new PartSource(part, classes.Length);
+
+    /// <summary>A part as a [1, 28, 28] classification dataset over <paramref name="classes"/>, every image framed in memory.</summary>
     public static Dataset ToDataset(Part part, CharacterClass[] classes)
     {
-        var features = new float[part.Labels.Length, Size * Size];
-        for (int i = 0; i < part.Labels.Length; i++)
-            for (int p = 0; p < Size * Size; p++)
-                features[i, p] = part.Images[i][p];
+        var features = new float[part.Count, Size * Size];
+        var flat = MemoryMarshal.CreateSpan(ref features[0, 0], features.Length);
+        for (int i = 0; i < part.Count; i++)
+            part.Frame(i, flat.Slice(i * Size * Size, Size * Size));
         return Dataset.FromClassLabels(features, part.Labels, classes.Length, [.. classes.Select(c => c.Text)])
             .WithFeatureShape(1, Size, Size);
     }
 
+    // Framed images and one-hot targets, read one at a time.
+    private sealed class PartSource(Part part, int classes) : ISampleSource
+    {
+        public int Count => part.Count;
+
+        public IReadOnlyList<int> FeatureShape { get; } = [1, Size, Size];
+
+        public IReadOnlyList<int> TargetShape { get; } = [classes];
+
+        public void Read(int index, Span<float> features, Span<float> targets)
+        {
+            part.Frame(index, features);
+            targets.Clear();
+            targets[part.Labels[index]] = 1f;
+        }
+    }
+
     private static Part Join(params Part[] parts) =>
-        new([.. parts.SelectMany(p => p.Images)], [.. parts.SelectMany(p => p.Labels)]);
+        new([.. parts.SelectMany(p => p.Segments)], [.. parts.SelectMany(p => p.Labels)]);
 
     private static Part Emnist(string split, IReadOnlyList<string> folders, int count)
     {
-        var (images, labels) = EmnistArchive.ReadSplit("balanced", split, folders);
+        var (images, labels) = EmnistArchive.ReadSplitBytes("balanced", split, folders);
         var picked = TestImages.RandomSubset(labels.Length, Math.Min(count, labels.Length));
-        return new([.. picked.Select(i => Frame(Row(images, i), Size))], [.. picked.Select(i => labels[i])]);
+        return new([(new Images(images, Size, ColumnMajor: false, Upright: false), picked)], [.. picked.Select(i => labels[i])]);
     }
 
     // A Kaggle archive's CSV pair: images one per line (rows x rows values, 0-255) and labels.
@@ -90,22 +186,7 @@ internal static class Datasets
             throw new InvalidDataException($"{archive}.zip: its {split} images have {images.Columns} values, expected {rows * rows}.");
 
         var picked = TestImages.RandomSubset(labelTable.Rows, Math.Min(count ?? labelTable.Rows, labelTable.Rows));
-        return new([.. picked.Select(i => Frame(Upright(images.Row(i), rows, columnMajor), rows))],
-            [.. picked.Select(i => labelTable.Row(i)[0] + offset)]);
-    }
-
-    // The image upright (a column-by-column image is transposed), with ink high (white on black) whichever way the file has it.
-    private static float[] Upright(ReadOnlySpan<byte> values, int rows, bool columnMajor)
-    {
-        var image = new float[rows * rows];
-        float sum = 0;
-        for (int y = 0; y < rows; y++)
-            for (int x = 0; x < rows; x++)
-                sum += image[y * rows + x] = values[columnMajor ? x * rows + y : y * rows + x] / 255f;
-        if (sum / image.Length > 0.5f)
-            for (int i = 0; i < image.Length; i++)
-                image[i] = 1f - image[i];
-        return image;
+        return new([(new Images(images.Values, rows, columnMajor, Upright: true), picked)], [.. picked.Select(i => labelTable.Row(i)[0] + offset)]);
     }
 
     /// <summary>A CSV file of small whole numbers (0-255: pixels, labels), one byte each, row after row.</summary>
@@ -204,22 +285,5 @@ internal static class Datasets
         if (columns < 0)
             throw new InvalidDataException("The CSV has no rows of numbers.");
         return new ByteTable(values, rows, columns);
-    }
-
-    // A data set's image framed by Idrak's ContentFrame the way the RegionClassifier frames a character cut from a page:
-    // cropped to its ink, centred and scaled to 28 x 28. Characters from EMNIST, AHCD's 32 x 32 and MADBase then look
-    // alike, and like the characters of a page.
-    private static float[] Frame(float[] image, int rows)
-    {
-        var framed = new float[Size * Size];
-        ContentFrame.Fit(image, rows, rows, framed, Size);
-        return framed;
-    }
-
-    private static float[] Row(float[,] images, int index)
-    {
-        var row = new float[Size * Size];
-        Buffer.BlockCopy(images, index * Size * Size * sizeof(float), row, 0, Size * Size * sizeof(float));
-        return row;
     }
 }

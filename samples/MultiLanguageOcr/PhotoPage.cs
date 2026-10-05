@@ -1,3 +1,4 @@
+using System.Buffers;
 using Idrak.Data;
 using Idrak.Vision;
 
@@ -98,7 +99,24 @@ internal static class PhotoPage
     // (Bradley's local threshold, the window sums from an integral image); 0 elsewhere.
     private static float[] LocalInk(float[] grey, int w, int h, int radius, float margin)
     {
-        var sum = new double[(w + 1) * (h + 1)];
+        // The integral image is scratch, rented and returned (a page's is 11 MB: allocating one per page churns the large
+        // object heap). Every entry is written below except the first row and column, which stay zero.
+        var sum = ArrayPool<double>.Shared.Rent((w + 1) * (h + 1));
+        try
+        {
+            return LocalInk(grey, w, h, radius, margin, sum);
+        }
+        finally
+        {
+            ArrayPool<double>.Shared.Return(sum);
+        }
+    }
+
+    private static float[] LocalInk(float[] grey, int w, int h, int radius, float margin, double[] sum)
+    {
+        sum.AsSpan(0, w + 1).Clear();
+        for (int y = 0; y < h; y++)
+            sum[(y + 1) * (w + 1)] = 0;
         for (int y = 0; y < h; y++)
         {
             double row = 0;
@@ -130,28 +148,43 @@ internal static class PhotoPage
     // so the strokes of letters crossing a line keep their ink above and below it.
     private static int RemoveRuledLines(float[] ink, int w, int h, int run)
     {
+        // Scratch, rented and returned: every entry of each is written before it is read.
+        var on = ArrayPool<byte>.Shared.Rent(w * h);
+        var right = ArrayPool<ushort>.Shared.Rent(w * h);
+        var left = ArrayPool<ushort>.Shared.Rent(w * h);
+        try
+        {
+            return RemoveRuledLines(ink, w, h, run, on, right, left);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(on);
+            ArrayPool<ushort>.Shared.Return(right);
+            ArrayPool<ushort>.Shared.Return(left);
+        }
+    }
+
+    private static int RemoveRuledLines(float[] ink, int w, int h, int run, byte[] on, ushort[] right, ushort[] left)
+    {
         // Column by column from here on (index x * h + y): every step below reads a neighbouring column or walks up and
         // down one, which in this order is memory read in sequence.
-        var on = new byte[w * h];
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++)
-                if (ink[y * w + x] > 0)
-                    on[x * h + y] = 1;
+                on[x * h + y] = ink[y * w + x] > 0 ? (byte)1 : (byte)0;
         bool On(int x, int y) => x >= 0 && y >= 0 && x < w && y < h && on[x * h + y] != 0;
 
         // How far ink continues sideways from each pixel (at most `run` steps), each step to the next column on the
         // same row, else a row up, else a row down: one pass per direction, each pixel's reach one more than that of
         // the pixel it steps to, instead of walking up to `run` steps from every pixel.
-        var right = new ushort[w * h];
-        var left = new ushort[w * h];
+        right.AsSpan((w - 1) * h, h).Clear();                                    // the last column reaches nothing to its right
+        left.AsSpan(0, h).Clear();                                               // the first nothing to its left
         for (int x = w - 2; x >= 0; x--)
         {
             int c = x * h, n = c + h;                                              // this column and the next
             for (int y = 0; y < h; y++)
             {
                 int next = on[n + y] != 0 ? y : y > 0 && on[n + y - 1] != 0 ? y - 1 : y + 1 < h && on[n + y + 1] != 0 ? y + 1 : -1;
-                if (next >= 0)
-                    right[c + y] = (ushort)Math.Min(run, 1 + right[n + next]);
+                right[c + y] = next >= 0 ? (ushort)Math.Min(run, 1 + right[n + next]) : (ushort)0;
             }
         }
         for (int x = 1; x < w; x++)
@@ -160,8 +193,7 @@ internal static class PhotoPage
             for (int y = 0; y < h; y++)
             {
                 int next = on[p + y] != 0 ? y : y > 0 && on[p + y - 1] != 0 ? y - 1 : y + 1 < h && on[p + y + 1] != 0 ? y + 1 : -1;
-                if (next >= 0)
-                    left[c + y] = (ushort)Math.Min(run, 1 + left[p + next]);
+                left[c + y] = next >= 0 ? (ushort)Math.Min(run, 1 + left[p + next]) : (ushort)0;
             }
         }
 
