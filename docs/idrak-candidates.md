@@ -6,6 +6,10 @@ it) becomes a library abstraction, with an interface the application can plug it
 specific to one application stays in that application. Every piece that moves keeps memory (RAM and VRAM) and speed
 in mind: no buffer more than it needs, reuse over allocation, work that can run on the device runs there.
 
+Nothing platform-specific moves: every built-in piece of the library works alike on Windows, Linux, macOS and Android,
+in C#, without calling an outside program (PowerShell, ImageMagick, ffmpeg) or a platform's imaging. A sample may use
+such a tool as a test case (to compare against), never as the library's way of doing a thing.
+
 ## Planned for 0.3.2
 
 Abstractions taken from the tables below, each with an interface the application can plug its own implementation
@@ -21,7 +25,11 @@ into, and each measured for memory and speed before it moves:
   Bradley's local window; Sauvola next), writing into the `ForegroundImage` buffer, parallel over rows.
 - **Region measures**: perimeter (and stroke thickness, `2 · area / perimeter`) per region from the labelling pass of
   `ConnectedComponents.Find`.
-- **Image converters**: an `IImageConverter` registry beside `ImageCodecs`, which `Decode` falls back to.
+- **JPEG codec**: a pure C# decoder (baseline and progressive, EXIF orientation) registered like the PNG, BMP and
+  Netpbm codecs, decoding in memory: no outside program, no temporary file. It replaces the samples' conversion to BMP
+  (Windows imaging through PowerShell, ImageMagick or ffmpeg), which stays in MultiLanguageOcr only as a test case to
+  compare decoded pixels against. Formats beyond JPEG come in as codecs through `ImageCodecs.Register`; no converter
+  registry with platform implementations.
 - **Speed and memory of a page** (measured on an RTX 5050 laptop, 1188 x 1280 photo, 75 characters, warm: about
   100 ms a page, of which the model is 7 ms): `Foreground` and the local threshold parallel over rows and vectorized,
   into the `ForegroundImage` buffer (photo ink about 100 ms today); `RegionClassifier` framing regions in parallel
@@ -31,8 +39,7 @@ into, and each measured for memory and speed before it moves:
   image, label map) reused across stages and pages; and the device's memory pool reported and trimmable (245 MB
   cached for 8 MB in use after one page).
 
-Later: a pure C# JPEG codec (baseline and progressive, no external program, no temporary file), the CTC loss and
-decoding for reading whole lines (0.4.0), and a .NET metrics and activities bridge for `dotnet-counters` and
+Later: the CTC loss and decoding for reading whole lines (0.4.0), and a .NET metrics and activities bridge for `dotnet-counters` and
 OpenTelemetry (an optional package).
 
 ## Open
@@ -40,7 +47,7 @@ OpenTelemetry (an optional package).
 | Piece | Built in | Why it is general | Library shape | Memory and speed | Target |
 |-------|----------|-------------------|---------------|------------------|--------|
 | Local (adaptive) threshold | MultiLanguageOcr `PhotoPage.LocalInk` | Uneven light and shadows in any photographed image: documents, microscopy, inspection, plates | An `IForegroundThreshold` (global Otsu, given level, local window) taken by `Foreground.Extract`; Bradley's mean window first, Sauvola (mean and deviation) next | Today one float per pixel for grey, a double per pixel for the integral image, a float per pixel for the result (899 x 1599: 5.7 + 11.5 + 5.7 MB). In the library: write into the `ForegroundImage` buffer, the integral image in rows of doubles reused per call (or float sums of 64-pixel tiles), parallel over rows; a device kernel for large images | 0.3.2 |
-| Image conversion to a readable format | MultiLanguageOcr `ImageConversion` (`IImageConverter`: Windows imaging, ImageMagick, ffmpeg) | Every image-reading network meets JPEG, WebP, HEIC and TIFF | An `IImageConverter` registry next to `ImageCodecs` (`ImageCodecs.Decode` falls back to it), or better a pure C# JPEG codec (baseline and progressive) registered as a codec, no external program | A converter writes a BMP once (cached next to the source); a codec decodes in memory with no file at all, straight into `ImageData` | 0.3.2 (the converter registry); the JPEG codec after |
+| JPEG (and other formats) | MultiLanguageOcr `ImageConversion` converts to BMP through Windows imaging (PowerShell), ImageMagick or ffmpeg: platform tools, a test case only | Every image-reading network meets JPEG (then WebP, HEIC, TIFF) | A pure C# JPEG codec registered with `ImageCodecs` like the built-in ones; other formats as codecs through `ImageCodecs.Register`; nothing that calls a platform's program | On the RTX 5050 laptop the first conversion of each photo (a process and a BMP file) was most of a new page's 238-662 ms; a codec decodes in memory into `ImageData`, no file | 0.3.2 |
 | Stroke-thickness filter for regions | MultiLanguageOcr `PhotoPage.RemoveSurroundings` | Telling thin strokes (writing, wires, cracks, vessels) from thick blobs is common in vision pre-processing | Region measures in `ConnectedComponents` (perimeter, `2 · area / perimeter`), so filters need no second pass over the label map | One int per region for the perimeter, computed in the labelling pass instead of a second scan | 0.3.2 |
 | Character-sequence recognition (CTC) | Not started | Joined handwriting, printed text lines, speech: any sequence read without per-item boxes | `Losses.Ctc` (forward-backward on the device) and greedy and beam decoding | The loss over [time, classes] per sequence in log space, batched; no [time × labels] matrix on the host | 0.4.0 |
 
