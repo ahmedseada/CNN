@@ -27,25 +27,21 @@ internal static class Words
         ["ا"] = ["١"], ["ه"] = ["٥"],
     };
 
-    /// <summary>The word's text, its characters given as every class's probability (best first), in page order.</summary>
-    public static string InContext(IReadOnlyList<IReadOnlyList<ClassScore>> word, Script script, Dictionary<string, CharacterClass> byText)
+    /// <summary>
+    /// The word's text, its characters given as every class's probability (best first), in page order. The word is
+    /// digits or letters as <paramref name="digits"/> says, or else by its own probabilities (<see cref="IsNumber"/>).
+    /// </summary>
+    public static string InContext(IReadOnlyList<IReadOnlyList<ClassScore>> word, Script script, Dictionary<string, CharacterClass> byText, bool? digits = null)
     {
         IEnumerable<CharacterClass> Candidates(IReadOnlyList<ClassScore> a) => a.Select(s => byText[s.Class]).Where(c => c.Script == script);
         var chars = word.Select(a => Candidates(a).First()).ToArray();
-
-        // Letters or digits: the probability the word's characters put on each, within the script.
-        double letterMass = 0, digitMass = 0;
-        foreach (var answer in word)
-            foreach (var s in answer)
-                if (byText[s.Class] is { } c && c.Script == script)
-                    (letterMass, digitMass) = c.IsDigit ? (letterMass, digitMass + s.Score) : (letterMass + s.Score, digitMass);
-        bool digits = digitMass > letterMass;
+        bool number = digits ?? IsNumber(word, script, byText);
 
         for (int i = 0; i < chars.Length; i++)
         {
-            if (!digits && chars[i].IsDigit)
+            if (!number && chars[i].IsDigit)
                 chars[i] = LikeliestOf(word[i], LooksLikeLetter.GetValueOrDefault(chars[i].Text), byText) ?? Candidates(word[i]).First(c => !c.IsDigit);
-            else if (digits && !chars[i].IsDigit)
+            else if (number && !chars[i].IsDigit)
                 chars[i] = LikeliestOf(word[i], LooksLikeDigit.GetValueOrDefault(chars[i].Text), byText) ?? Candidates(word[i]).First(c => c.IsDigit);
         }
 
@@ -55,6 +51,20 @@ internal static class Words
         var letters = text.Where(char.IsLetter).ToArray();
         bool upper = letters.Count(char.IsUpper) * 2 >= letters.Length;
         return upper ? text.ToUpperInvariant() : text.ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Whether characters (one word, or a run of one-character words such as 0 1 2 4 5) are digits: the probability
+    /// they put on digits, within the script, beats the probability on letters.
+    /// </summary>
+    public static bool IsNumber(IEnumerable<IReadOnlyList<ClassScore>> characters, Script script, Dictionary<string, CharacterClass> byText)
+    {
+        double letterMass = 0, digitMass = 0;
+        foreach (var answer in characters)
+            foreach (var s in answer)
+                if (byText[s.Class] is { } c && c.Script == script)
+                    (letterMass, digitMass) = c.IsDigit ? (letterMass, digitMass + s.Score) : (letterMass + s.Score, digitMass);
+        return digitMass > letterMass;
     }
 
     // The likeliest of some characters (look-alikes) by the model's probabilities, or null when none is a class.

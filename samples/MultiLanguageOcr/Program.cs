@@ -263,10 +263,16 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
     foreach (var line in Enumerable.Range(0, glyphs.Count).GroupBy(i => glyphs[i].Line))
     {
         var indices = line.ToList();
-        // A dash (a short flat mark, no character of the model) is its own word, read without the model.
+        // A dash (a short flat mark standing between spaces, no character of the model) is its own word, read without
+        // the model. The flat strokes joining Arabic letters (هـنـا) touch their letters, so they are no dashes.
         var heights = indices.Select(i => glyphs[i].Box.Height).Order().ToArray();
         int typical = heights[heights.Length / 2];
-        bool Dash(int i) => glyphs[i].Box.Height * 4 <= typical && glyphs[i].Box.Width >= 2 * glyphs[i].Box.Height;
+        bool Dash(int i)
+        {
+            int at = indices.IndexOf(i);
+            bool spaced = glyphs[i].SpaceBefore && (at == indices.Count - 1 || glyphs[indices[at + 1]].SpaceBefore);
+            return spaced && glyphs[i].Box.Height * 4 <= typical && glyphs[i].Box.Width >= 2 * glyphs[i].Box.Height;
+        }
 
         // The line's script: the one most of its probability is on.
         var script = Enum.GetValues<Script>().MaxBy(s =>
@@ -280,7 +286,24 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
             words[^1].Add(i);
         }
 
-        var visual = words.Select(w => Dash(w[0]) ? "-" : Words.InContext([.. w.Select(i => answers[i])], script, byText)).ToList();
+        // A run of one-character words (0 1 2 4 5) is digits or letters as a whole: the clear ones decide for the
+        // look-alikes (a lone 1 is as likely an L).
+        var kind = new bool?[words.Count];
+        for (int start = 0; start < words.Count;)
+        {
+            int end = start;
+            while (end < words.Count && words[end].Count == 1 && !Dash(words[end][0]))
+                end++;
+            if (end - start >= 2)
+            {
+                bool number = Words.IsNumber(words[start..end].Select(w => answers[w[0]]), script, byText);
+                for (int k = start; k < end; k++)
+                    kind[k] = number;
+            }
+            start = Math.Max(end, start + 1);
+        }
+
+        var visual = words.Select((w, k) => Dash(w[0]) ? "-" : Words.InContext([.. w.Select(i => answers[i])], script, byText, kind[k])).ToList();
         lines.Add((script, TextOrder.Logical(visual, rightToLeft: script == Script.Arabic)));
 
         if (show)
