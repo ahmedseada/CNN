@@ -5,7 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Idrak" Version="0.3.0" />
+    <PackageReference Include="Idrak" Version="0.3.1" />
   </ItemGroup>
 
 </Project>

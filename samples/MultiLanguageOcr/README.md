@@ -1,7 +1,7 @@
 # MultiLanguageOcr
 
 A .NET 10 console app that reads pages of handwritten characters in **English and Arabic**. It uses
-[Idrak](https://www.nuget.org/packages/Idrak) 0.3.0 and its fluent API. It builds on [DocumentOcr](../DocumentOcr/README.md),
+[Idrak](https://www.nuget.org/packages/Idrak) 0.3.1 and its fluent API. It builds on [DocumentOcr](../DocumentOcr/README.md),
 which reads English only.
 
 How it works:
@@ -14,12 +14,15 @@ How it works:
    | Arabic | AHCD (Arabic Handwritten Characters Dataset) | 28 letters: `ا ب ت ث ج ح خ د ذ ر ز س ش ص ض ط ظ ع غ ف ق ك ل م ن ه و ي` |
    | Arabic | MADBase / AHDD (Arabic Handwritten Digits) | 10 Arabic-Indic digits: `٠ ١ ٢ ٣ ٤ ٥ ٦ ٧ ٨ ٩` |
 
-   Every training image is cropped to its ink and scaled to 28 x 28 the same way as a character cut from a page.
-   So EMNIST's 28 x 28, AHCD's 32 x 32 and MADBase's images all look alike to the model.
-2. **Page reader** ([`PageReader.cs`](PageReader.cs)). It finds lines and characters by the gaps between them, like
-   DocumentOcr's. One addition for Arabic: a band of rows much thinner than a line (the dots above and below letters
-   such as `ت` `ث` `ب`) joins the nearest line instead of becoming a line of its own. A letter's dots sit within its width,
-   so they stay part of the letter.
+   Every training image is framed by Idrak's `ContentFrame.Fit`: cropped to its ink, centred and scaled to 28 x 28,
+   the same way Idrak frames a character cut from a page. So EMNIST's 28 x 28, AHCD's 32 x 32 and MADBase's images
+   all look alike to the model, and like the characters of a page.
+2. **Page layout** ([`TextLines.cs`](TextLines.cs)), plugged into Idrak's `RegionClassifier` as an `IRegionProposer`.
+   Idrak separates the ink from the paper (either polarity, Otsu's threshold), frames each character and classifies
+   them in batches on the device. The sample supplies the part that is specific to text: it finds lines and
+   characters by the gaps between them, like DocumentOcr's. One addition for Arabic: a band of rows much thinner than
+   a line (the dots above and below letters such as `ت` `ث` `ب`) joins the nearest line instead of becoming a line of
+   its own. A letter's dots sit within its width, so they stay part of the letter.
 3. **One script per line.** Some characters look alike across scripts: `V`/`٧`, `l`/`ا`, `0`/`٥`/`ه`. So each line takes
    the script that most of its probability is on, and every character on it is then read within that script.
 4. **Word context**, per script: in a word of mostly letters, a digit becomes the likeliest of the letters it looks
@@ -42,7 +45,7 @@ Letters outside AHCD's 28 aren't known either: `ة`, `ى`, `ء` and alef with ha
 From the repository root:
 
 ```sh
-dotnet tool restore        # installs Idrak.Cli 0.3.0 from dotnet-tools.json
+dotnet tool restore        # installs Idrak.Cli 0.3.1 from dotnet-tools.json
 ```
 
 ## 2. Download the data
@@ -115,24 +118,29 @@ laid out right to left. Then it reads the page back and prints, for each line, t
 text, what it read, and the number of edits, plus the character error rate:
 
 ```
+Found 37 characters on 3 lines
+
 line 1 (Latin)
   expected: HELLO WORLD 2026
-  read:     HELLO WORID 2026
+  read:     HELLO WORLO 2026
+  1 edit
 line 2 (Arabic)
   expected: مرحبا بالعالم
   read:     مرحبا بالعالم
+  0 edits
 line 3 (Arabic)
   expected: نص عربي ١٢٣٤٥
-  read:     نس عربي ١٢٣٤٥
+  read:     نص عربي ١٢٣٤٥
+  0 edits
 
-Character error rate: 4.8% (2 edits over 42 characters)
+Character error rate: 2.4% (1 edit over 42 characters)
 ```
 
-That output is from a small test model trained on font-rendered stand-ins, not the real data sets.
-
-A measured run on the real data sets: on an NVIDIA RTX 5070 Ti, 12 epochs took about 4 minutes and reached 92.8% test
-accuracy over the 85 characters. Arabic letters scored 96.3% and Arabic digits 98.9%. 97.9-99.6% of each kind landed
-in the right script. That run predates the fix for MADBase's orientation, so retrain for real pages.
+A measured run on an NVIDIA RTX 5070 Ti: 12 epochs took about 4 minutes and reached 92.5% test accuracy over the 85
+characters. Latin digits scored 87.6%, Latin letters 88.3%, Arabic letters 96.4% and Arabic digits 98.6%, and
+98.1-99.3% of each kind landed in the right script. Most of the remaining mistakes are characters that look the same
+on their own (`L`/`1`, `O`/`0`, `I`/`1`, `q`/`9`, and `F`/`f`, which EMNIST Balanced keeps apart). Word context
+fixes many of them on a page.
 
 Your own text: `--text "ROOM 101 OPENS AT 0815\nبيت ٢٠٢ مفتوح"` (`\n` starts a new line; use the 85 characters above).
 `--out FILE` chooses where the page is written.
@@ -160,8 +168,10 @@ straight and apart, and crop the scan to the text.
   `Transforms = [new RandomShift(2), new RandomRotation(8)]`.
 - **Network and training**: the builder chain and `TrainingRun` of the other samples. The network is a little wider
   (48 and 96 filters, 384 hidden units) for 85 classes. `EarlyStoppingPatience` keeps the best epoch.
-- **Inference**: one `Predict(list)` call for all the characters of a page. `ClassPrediction.Scores` gives every
-  class's probability: summed per script it picks the line's script, and filtered to that script it picks each
-  character.
-- **Images**: `ImageCodecs.Decode` for the page, and `ImageData.Resize` for grey conversion and for shrinking each
-  character to 28 x 28.
+- **Framing** (`Idrak.Vision`): `ContentFrame.Fit` frames the training images; `RegionClassifier` frames the
+  characters of a page the same way, straight into one batch buffer.
+- **Inference** (`Idrak.Vision`): `RegionClassifier.Load("multilang.ikm")` reads the package's model, classes and
+  input size. `Foreground(image)` separates the ink, `TextLineProposer` finds the characters, and one
+  `Classify(page, boxes)` call classifies all of them in batches. `Top(i, n)` gives every class's probability: summed
+  per script it picks the line's script, and filtered to that script it picks each character.
+- **Images**: `ImageCodecs.Decode` for the page (PNG, BMP, PGM, colour or grey).

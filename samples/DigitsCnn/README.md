@@ -1,14 +1,14 @@
 # DigitsCnn
 
 A .NET 10 console app that trains a small convolutional network to recognise handwritten digits 0-9 (MNIST). It uses
-[Idrak](https://www.nuget.org/packages/Idrak) 0.3.0 and its fluent API. The data is downloaded with the Idrak CLI.
+[Idrak](https://www.nuget.org/packages/Idrak) 0.3.1 and its fluent API. The data is downloaded with the Idrak CLI.
 
 ## 1. Set up the Idrak CLI
 
 From the repository root:
 
 ```sh
-dotnet tool restore        # installs Idrak.Cli 0.3.0 from dotnet-tools.json
+dotnet tool restore        # installs Idrak.Cli 0.3.1 from dotnet-tools.json
 dotnet idrak version       # check: prints the tool, library and runtime versions
 ```
 
