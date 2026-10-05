@@ -41,10 +41,11 @@ internal static class Datasets
         var none = new Part([], []);
         var emnistTrain = training ? Emnist("train", folders, perSource ?? 60_000) : none;
         var emnistTest = Emnist("test", folders, perSource ?? 10_000);
-        var lettersTrain = training ? Kaggle("ahcd1", "train", 32, folders, perSource, offset: arabicLetters - 1) : none;   // labels 1-28
-        var lettersTest = Kaggle("ahcd1", "test", 32, folders, perSource, offset: arabicLetters - 1);
-        var digitsTrain = training ? Kaggle("ahdd1", "train", 28, folders, perSource ?? 30_000, offset: arabicDigits) : none;   // labels 0-9
-        var digitsTest = Kaggle("ahdd1", "test", 28, folders, perSource ?? 5_000, offset: arabicDigits);
+        // AHCD stores each image column by column; MADBase stores it row by row (an upright ٢ came out on its side when transposed).
+        var lettersTrain = training ? Kaggle("ahcd1", "train", 32, folders, perSource, offset: arabicLetters - 1, columnMajor: true) : none;   // labels 1-28
+        var lettersTest = Kaggle("ahcd1", "test", 32, folders, perSource, offset: arabicLetters - 1, columnMajor: true);
+        var digitsTrain = training ? Kaggle("ahdd1", "train", 28, folders, perSource ?? 30_000, offset: arabicDigits, columnMajor: false) : none;   // labels 0-9
+        var digitsTest = Kaggle("ahdd1", "test", 28, folders, perSource ?? 5_000, offset: arabicDigits, columnMajor: false);
         Console.WriteLine($"  EMNIST {emnistTrain.Labels.Length:N0} + {emnistTest.Labels.Length:N0}, AHCD {lettersTrain.Labels.Length:N0} + {lettersTest.Labels.Length:N0}, " +
             $"MADBase {digitsTrain.Labels.Length:N0} + {digitsTest.Labels.Length:N0} (training + test)");
 
@@ -72,8 +73,8 @@ internal static class Datasets
         return new([.. picked.Select(i => PageReader.Renormalize(Row(images, i), Size, Size))], [.. picked.Select(i => labels[i])]);
     }
 
-    // A Kaggle archive's CSV pair: images one per line (rows x rows values, 0-255, stored column by column) and labels.
-    private static Part Kaggle(string archive, string split, int rows, IReadOnlyList<string> folders, int? count, int offset)
+    // A Kaggle archive's CSV pair: images one per line (rows x rows values, 0-255) and labels.
+    private static Part Kaggle(string archive, string split, int rows, IReadOnlyList<string> folders, int? count, int offset, bool columnMajor)
     {
         using var zip = ZipFile.OpenRead(DataFiles.Find($"{archive}.zip", folders, ArabicHint));
         ZipArchiveEntry Entry(string kind) => zip.Entries.FirstOrDefault(e =>
@@ -87,19 +88,18 @@ internal static class Datasets
             throw new InvalidDataException($"{archive}.zip: {images.Length} {split} images but {labels.Length} labels.");
 
         var picked = TestImages.RandomSubset(labels.Length, Math.Min(count ?? labels.Length, labels.Length));
-        return new([.. picked.Select(i => PageReader.Renormalize(Upright(images[i], rows), rows, rows))], [.. picked.Select(i => labels[i])]);
+        return new([.. picked.Select(i => PageReader.Renormalize(Upright(images[i], rows, columnMajor), rows, rows))], [.. picked.Select(i => labels[i])]);
     }
 
-    // AHCD and MADBase store each image column by column: transpose it so the character stands upright, and make ink
-    // high (white on black) whichever way the file has it.
-    private static float[] Upright(double[] values, int rows)
+    // The image upright (a column-by-column image is transposed), with ink high (white on black) whichever way the file has it.
+    private static float[] Upright(double[] values, int rows, bool columnMajor)
     {
         if (values.Length != rows * rows)
             throw new InvalidDataException($"An image has {values.Length} values, expected {rows * rows}.");
         var image = new float[rows * rows];
         for (int y = 0; y < rows; y++)
             for (int x = 0; x < rows; x++)
-                image[y * rows + x] = (float)(values[x * rows + y] / 255.0);
+                image[y * rows + x] = (float)(values[columnMajor ? x * rows + y : y * rows + x] / 255.0);
         return image.Average() > 0.5f ? [.. image.Select(v => 1f - v)] : image;
     }
 

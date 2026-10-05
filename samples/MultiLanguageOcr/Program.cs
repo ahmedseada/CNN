@@ -246,8 +246,10 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
 }
 
 // A word read within its line's script. Each character becomes its likeliest character of that script; then, in a
-// word of mostly letters, a digit becomes the letter it looks like (1 -> I, ١ -> ا) or else its likeliest letter, and in
-// a word of mostly digits the other way round. A Latin word then takes the case of most of its letters.
+// word of mostly letters, a digit becomes the likeliest of the letters it looks like (1 -> I or L, 0 -> O or D,
+// ١ -> ا), or else its likeliest letter, and in a word of mostly digits the other way round. The model's own
+// probabilities choose among look-alikes: a 1 among letters is as often an L as an I. A Latin word then takes the case
+// of most of its letters.
 static string WordInContext(IReadOnlyList<ClassPrediction> word, Script script, Dictionary<string, CharacterClass> byText)
 {
     IEnumerable<CharacterClass> Candidates(ClassPrediction a) => a.Scores.Select(s => byText[s.Class]).Where(c => c.Script == script);
@@ -256,11 +258,9 @@ static string WordInContext(IReadOnlyList<ClassPrediction> word, Script script, 
     for (int i = 0; i < chars.Length; i++)
     {
         if (digits * 2 < chars.Length && chars[i].IsDigit)
-            chars[i] = LooksLikeLetter.TryGetValue(chars[i].Text, out var letter) && byText.TryGetValue(letter, out var l)
-                ? l : Candidates(word[i]).First(c => !c.IsDigit);
+            chars[i] = LikeliestOf(word[i], LooksLikeLetter.GetValueOrDefault(chars[i].Text), byText) ?? Candidates(word[i]).First(c => !c.IsDigit);
         else if (digits * 2 > chars.Length && !chars[i].IsDigit)
-            chars[i] = LooksLikeDigit.TryGetValue(chars[i].Text, out var digit) && byText.TryGetValue(digit, out var d)
-                ? d : Candidates(word[i]).First(c => c.IsDigit);
+            chars[i] = LikeliestOf(word[i], LooksLikeDigit.GetValueOrDefault(chars[i].Text), byText) ?? Candidates(word[i]).First(c => c.IsDigit);
     }
 
     string text = string.Concat(chars.Select(c => c.Text));
@@ -270,6 +270,11 @@ static string WordInContext(IReadOnlyList<ClassPrediction> word, Script script, 
     bool upper = letters.Count(char.IsUpper) * 2 >= letters.Length;
     return upper ? text.ToUpperInvariant() : text.ToLowerInvariant();
 }
+
+// The likeliest of some characters (look-alikes) by the model's probabilities, or null when none is a class.
+static CharacterClass? LikeliestOf(ClassPrediction answer, string[]? options, Dictionary<string, CharacterClass> byText) =>
+    options is null ? null
+        : answer.Scores.Where(s => options.Contains(s.Class) && byText.ContainsKey(s.Class)).Select(s => byText[s.Class]).FirstOrDefault();
 
 // Latin is compared without case (EMNIST Balanced shares one class between c and C...), with single spaces.
 static string Comparable(string text) =>
@@ -292,16 +297,16 @@ static int Levenshtein(string a, string b)
 // Characters that handwriting makes hard to tell apart, for words whose kind (letters or digits) is known.
 internal static partial class Program
 {
-    private static readonly Dictionary<string, string> LooksLikeLetter = new()
+    private static readonly Dictionary<string, string[]> LooksLikeLetter = new()
     {
-        ["0"] = "O", ["1"] = "I", ["2"] = "Z", ["5"] = "S", ["6"] = "G", ["8"] = "B",
-        ["١"] = "ا", ["٥"] = "ه",
+        ["0"] = ["O", "D"], ["1"] = ["I", "L"], ["2"] = ["Z"], ["5"] = ["S"], ["6"] = ["G", "b"], ["8"] = ["B"], ["9"] = ["g", "q"],
+        ["١"] = ["ا"], ["٥"] = ["ه"],
     };
 
-    private static readonly Dictionary<string, string> LooksLikeDigit = new()
+    private static readonly Dictionary<string, string[]> LooksLikeDigit = new()
     {
-        ["O"] = "0", ["D"] = "0", ["I"] = "1", ["L"] = "1", ["Z"] = "2", ["S"] = "5", ["G"] = "6", ["b"] = "6",
-        ["B"] = "8", ["g"] = "9", ["q"] = "9",
-        ["ا"] = "١", ["ه"] = "٥",
+        ["O"] = ["0"], ["D"] = ["0"], ["I"] = ["1"], ["L"] = ["1"], ["Z"] = ["2"], ["S"] = ["5"], ["G"] = ["6"], ["b"] = ["6"],
+        ["B"] = ["8"], ["g"] = ["9"], ["q"] = ["9"],
+        ["ا"] = ["١"], ["ه"] = ["٥"],
     };
 }

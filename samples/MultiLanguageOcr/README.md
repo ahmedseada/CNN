@@ -22,8 +22,9 @@ How it works:
    so they stay part of the letter.
 3. **One script per line.** Some characters look alike across scripts: `V`/`٧`, `l`/`ا`, `0`/`٥`/`ه`. So each line takes
    the script that most of its probability is on, and every character on it is then read within that script.
-4. **Word context**, per script: in a word of mostly letters, a digit becomes the letter it looks like (`1` → `I`,
-   `١` → `ا`, `٥` → `ه`); in a word of mostly digits, the other way round. English words then take one case.
+4. **Word context**, per script: in a word of mostly letters, a digit becomes the likeliest of the letters it looks
+   like, by the model's own probabilities (`1` → `I` or `L`, `0` → `O` or `D`, `١` → `ا`, `٥` → `ه`). In a word of
+   mostly digits it works the other way round. English words then take one case.
 5. **Reading order** ([`TextOrder.cs`](TextOrder.cs)). Arabic lines are read right to left: the words from right to
    left and each word's letters from right to left, but numbers keep their digits left to right, as Arabic writes them.
 
@@ -74,8 +75,8 @@ zipped: the app reads the CSV files inside them directly.
 | `ahcd1.zip` | 13,440 training and 3,360 test letters, one image of 32 x 32 values per line, labels 1 (ا) to 28 (ي) |
 | `ahdd1.zip` | 60,000 training and 10,000 test digits, one image of 28 x 28 values per line, labels 0 to 9 |
 
-Both data sets store each image column by column; the app transposes them upright. `train` prints a few Arabic test
-characters as the model sees them, so you can check they stand upright.
+AHCD stores each image column by column, and the app transposes it upright. MADBase stores its images row by row, as
+they are. `train` prints a few Arabic test characters as the model sees them, so you can check they stand upright.
 
 ## 3. Train
 
@@ -128,6 +129,10 @@ Character error rate: 4.8% (2 edits over 42 characters)
 ```
 
 That output is from a small test model trained on font-rendered stand-ins, not the real data sets.
+
+A measured run on the real data sets: on an NVIDIA RTX 5070 Ti, 12 epochs took about 4 minutes and reached 92.8% test
+accuracy over the 85 characters. Arabic letters scored 96.3% and Arabic digits 98.9%. 97.9-99.6% of each kind landed
+in the right script. That run predates the fix for MADBase's orientation, so retrain for real pages.
 
 Your own text: `--text "ROOM 101 OPENS AT 0815\nبيت ٢٠٢ مفتوح"` (`\n` starts a new line; use the 85 characters above).
 `--out FILE` chooses where the page is written.
