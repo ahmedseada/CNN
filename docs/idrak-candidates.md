@@ -15,6 +15,23 @@ in mind: no buffer more than it needs, reuse over allocation, work that can run 
 | Stroke-thickness filter for regions | MultiLanguageOcr `PhotoPage.RemoveSurroundings` | Telling thin strokes (writing, wires, cracks, vessels) from thick blobs is common in vision pre-processing | Region measures in `ConnectedComponents` (perimeter, `2 · area / perimeter`), so filters need no second pass over the label map | One int per region for the perimeter, computed in the labelling pass instead of a second scan |
 | Character-sequence recognition (CTC) | Not started | Joined handwriting, printed text lines, speech: any sequence read without per-item boxes | `Losses.Ctc` (forward-backward on the device) and greedy and beam decoding | The loss over [time, classes] per sequence in log space, batched; no [time × labels] matrix on the host |
 
+## Telemetry gaps
+
+Found by timing MultiLanguageOcr's `ocr` with Idrak's telemetry (`InferenceLog.cs`): the model's inference is
+covered (`TelemetryLevel.Inference`, one `InferenceCompleted` per batch, timed with the device synchronized); the rest
+of a page is not, so the sample still times it with a stopwatch.
+
+| Gap | Today | Library shape | Memory and speed |
+|-----|-------|---------------|------------------|
+| Applications cannot publish their own stages | Every publishing method of `Telemetry` is internal; a hook only receives the library's events, so an application's pipeline cannot appear in the same console, JSON Lines or recorder output | `Telemetry.Stage("ink")` returning a disposable scope that publishes `StageCompleted(Name, Duration, Device?, Memory?)` under a new `TelemetryLevel.Stages` | One static read and an AND when nobody listens, as today's sources |
+| `Idrak.Vision` publishes nothing | `Foreground.Extract`, `ConnectedComponents.Find`, `ContentFrame` framing inside `RegionClassifier.Classify` (CPU work beside the model), `ModelDetector` decoding and suppression, `ModelSegmenter` | Stage events from each, through the same `Stages` level | Timestamps only when enabled |
+| Model loading is not reported | `Predictor.Load`, `RegionClassifier.Load` and `ModelPackage` publish nothing (only `InferenceEngine` reports `ModelLoaded`) | A load event: package, bytes read, parameters, device, duration | |
+| Image decoding is not reported | `ImageCodecs.Decode` (and a converter's run) | A stage event with the codec, size and duration | |
+| No memory with inference, no peak anywhere | `InferenceCompleted` has no memory (`EpochCompleted` has `MemoryUsage`); `MemoryUsage` has in use, cached and limit but no peak, so a page's VRAM peak cannot be read | `MemoryUsage.Peak` (with a reset), and the device's memory on `InferenceCompleted` | A peak is one compare per allocation in the memory pool |
+| First call and warm calls look alike | The first `Predict` includes compiling kernels and JIT; `InferenceCompleted` cannot tell it apart (MultiLanguageOcr runs a warm repeat to show the steady speed) | A `First` flag on `InferenceCompleted`, or a kernel-compilation event | |
+| The model's name is its type | `InferenceCompleted.Model` is the module's display name ("Sequential(5 layers)"), not the package it came from | The package name or a name given at load | |
+| No .NET metrics bridge | No `System.Diagnostics.Metrics` or `ActivitySource`, so `dotnet-counters` and OpenTelemetry see nothing | A hook that turns events into meters and activities, in the core or an optional package | Only when subscribed |
+
 ## Stays in the samples
 
 - Ruled-line removal (notebook paper) and the page's surroundings by position (binding, cover, desk): specific to

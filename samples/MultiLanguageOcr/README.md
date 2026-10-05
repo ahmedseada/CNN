@@ -201,6 +201,13 @@ A dash (a short flat mark between words) is read as `-` without the model.
 On the notebook photo in this sample's history, with a model of digits trained on MNIST framed the same way, the
 number line `01345 - 16108` reads every digit.
 
+**Speed.** Every `ocr` run prints where the time went: loading the model, opening the image, the ink, the lines and
+characters, the model (a first run and a warm repeat, the speed of every later page), and words and reading order;
+then the device's memory as Idrak counts it and the process's peak memory. The model's time comes from Idrak's
+inference telemetry (each batch timed with the device synchronized), the framing being the rest of a classify;
+`--telemetry` also prints Idrak's own inference events. The other stages are timed in the sample: Idrak publishes no
+events for them yet (see [docs/idrak-candidates.md](../../docs/idrak-candidates.md)).
+
 Joined handwriting is still out of reach: all Arabic words and joined English ("on", "Read") come out as one box per
 word, which a model of single characters cannot read.
 

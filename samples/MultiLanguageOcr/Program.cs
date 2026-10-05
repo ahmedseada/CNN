@@ -20,7 +20,7 @@ using MultiLanguageOcr;
 //   dotnet run -- train   [--epochs 12] [--patience 3] [--batch 128] [--train-samples N] [--model multilang.ikm] [--data data]
 //   dotnet run -- demo    [--text "HELLO\nمرحبا"] [--out page.pgm]    writes a page in both scripts, then reads it
 //   dotnet run -- demo    --count 50 [--seed 1]                       50 pages of random words, scored per script
-//   dotnet run -- ocr     <page.png|bmp|pgm> [--model multilang.ikm] [--crop x,y,w,h] [--photo | --no-photo]
+//   dotnet run -- ocr     <page.png|bmp|pgm> [--model multilang.ikm] [--crop x,y,w,h] [--photo | --no-photo] [--telemetry]
 
 Console.OutputEncoding = Encoding.UTF8;
 int[] imageShape = [1, Datasets.Size, Datasets.Size];
@@ -235,19 +235,24 @@ void Ocr(SampleOptions o)
     if (o.ImagePath is null)
         throw new ArgumentException("ocr needs an image of a page: dotnet run -- ocr page.png (or run 'demo' to make one)");
     var crop = o.Crop is { } c ? PhotoPage.ParseCrop(c) : (PixelBox?)null;
-    foreach (var line in ReadPage(o.ImagePath, o.ModelPath, show: true, crop: crop, photo: o.Photo))
+    foreach (var line in ReadPage(o.ImagePath, o.ModelPath, show: true, crop: crop, photo: o.Photo, telemetry: o.Telemetry))
         Console.WriteLine($"[{(line.Script == Script.Arabic ? "ar" : "en")}] {line.Text}");
     Console.WriteLine($"Also written to {Path.GetFullPath(Path.ChangeExtension(o.ImagePath, ".txt"))}");
 }
 
 // The lines of a page image, each with its script and its text in reading order. Also writes them to a .txt file.
 // Idrak's RegionClassifier separates the ink, frames each character the layout finds and classifies them in batches.
-List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool show, bool report = true, PixelBox? crop = null, bool? photo = null)
+List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool show, bool report = true, PixelBox? crop = null, bool? photo = null, bool telemetry = false)
 {
     if (!File.Exists(modelPath))
         throw new FileNotFoundException($"No model at '{modelPath}'. Run 'dotnet run -- train' first.");
+    // The model's time comes from Idrak's inference telemetry; the stages around it are timed here (Idrak publishes
+    // no events for loading, decoding, the ink, the layout or the framing).
+    var (log, session) = report ? InferenceLog.Start(console: telemetry) : (null, null);
+    using var telemetrySession = session;
     var clock = Stopwatch.StartNew();
     var times = new List<(string Stage, double Ms)>();
+    var model = new List<(string Stage, (int Batches, int Samples, TimeSpan Latency) Telemetry)>();
     void Lap(string stage) { times.Add((stage, clock.Elapsed.TotalMilliseconds)); clock.Restart(); }
 
     using var classifier = RegionClassifier.Load(modelPath).Build();
@@ -262,12 +267,17 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
             $"took {prepared.Ink:P1}, after removing {prepared.RuledPixels:N0} ruled-line pixels and {prepared.SurroundingRegions} regions around the page");
     var glyphs = new TextLineProposer().Find(page);
     Lap("lines and characters");
+    int before = log?.Count ?? 0;
     var found = classifier.Classify(page, [.. glyphs.Select(g => g.Box)]);
     Lap("classify (first run)");
-    if (report && glyphs.Count > 0)
+    if (log is not null)
+        model.Add(("classify (first run)", log.Since(before)));
+    if (log is not null && glyphs.Count > 0)
     {
+        before = log.Count;
         classifier.Classify(page, [.. glyphs.Select(g => g.Box)]);           // again, warm: the speed of every later page
         Lap("classify (warm)");
+        model.Add(("classify (warm)", log.Since(before)));
     }
     var answers = Enumerable.Range(0, found.Count).Select(i => found.Top(i, found.Classes.Count)).ToArray();
     if (report)
@@ -335,24 +345,34 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
     if (report)
     {
         Lap(show ? "words, order (and printing)" : "words and reading order");
-        PrintTimes(times, glyphs.Count, image.Width, image.Height, classifier);
+        PrintTimes(times, model, glyphs.Count, image.Width, image.Height);
     }
     return lines;
 }
 
-// Where the time went, the characters per second of the model (warm), and the process's peak memory.
-static void PrintTimes(List<(string Stage, double Ms)> times, int characters, int width, int height, RegionClassifier classifier)
+// Where the time went: each stage's wall time and, for the model, Idrak's inference telemetry (the device's own time
+// for every batch, the rest of a classify being the framing on the CPU); the model's warm speed; and memory: the
+// device's as Idrak counts it, and the process's peak working set.
+static void PrintTimes(List<(string Stage, double Ms)> times, List<(string Stage, (int Batches, int Samples, TimeSpan Latency) Telemetry)> model,
+    int characters, int width, int height)
 {
     Console.WriteLine();
     Console.WriteLine($"Time ({width} x {height} image, {characters} characters, on {Device.Default}):");
     foreach (var (stage, ms) in times)
-        Console.WriteLine($"  {stage,-26} {ms,9:F1} ms");
+    {
+        string note = "";
+        if (model.FirstOrDefault(m => m.Stage == stage) is { Stage: not null } m && m.Telemetry.Batches > 0)
+        {
+            double inference = m.Telemetry.Latency.TotalMilliseconds;
+            note = $"   model {inference:F1} ms in {m.Telemetry.Batches} batch{(m.Telemetry.Batches == 1 ? "" : "es")} " +
+                $"({m.Telemetry.Samples / m.Telemetry.Latency.TotalSeconds:N0} characters/s), framing {Math.Max(0, ms - inference):F1} ms";
+        }
+        Console.WriteLine($"  {stage,-26} {ms,9:F1} ms{note}");
+    }
     double page = times.Where(t => t.Stage != "load the model" && t.Stage != "classify (warm)").Sum(t => t.Ms);
     Console.WriteLine($"  {"page, model loaded",-26} {page,9:F1} ms (all but loading the model and the warm repeat)");
-    if (times.FirstOrDefault(t => t.Stage == "classify (warm)") is { Ms: > 0 } warm && characters > 0)
-        Console.WriteLine($"  model, warm: {characters / (warm.Ms / 1000):N0} characters/s ({warm.Ms * 1000 / characters:F0} µs each)");
     using var process = Process.GetCurrentProcess();
-    Console.WriteLine($"  memory: {process.PeakWorkingSet64 / (1024.0 * 1024):N0} MB peak working set, {GC.GetTotalMemory(false) / (1024.0 * 1024):N0} MB managed now");
+    Console.WriteLine($"  memory: {Device.Default} {InferenceLog.Memory(Device.Default)}; process peak working set {process.PeakWorkingSet64 / (1024.0 * 1024):N0} MB");
 }
 
 // Latin is compared without case (EMNIST Balanced shares one class between c and C...), with single spaces.
