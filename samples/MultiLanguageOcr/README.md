@@ -175,7 +175,8 @@ For the best results, write characters separately with clear gaps (Arabic letter
 straight and apart, and crop the scan to the text.
 
 **Photos.** A phone photo of a notebook page works too ([`PhotoPage.cs`](PhotoPage.cs)). When one threshold would
-take more than 15% of the photo as ink (shadows, the desk, the binding), the page is read as a photo:
+take more than 15% of the photo as ink (shadows, the desk, the binding), or one dark region spans half of it (a desk
+or cover around the page), the page is read as a photo:
 
 - a local threshold: a pixel is ink where it is clearly darker than its surroundings, so uneven light does not count;
 - the ruled lines of notebook paper are removed (thin strokes running far sideways), keeping the letters that cross

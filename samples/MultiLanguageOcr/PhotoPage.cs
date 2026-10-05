@@ -16,7 +16,8 @@ namespace MultiLanguageOcr;
 /// </remarks>
 internal static class PhotoPage
 {
-    /// <summary>A page whose global threshold takes in more than this share of its pixels is read as a photo.</summary>
+    /// <summary>A page whose global threshold takes in more than this share of its pixels is read as a photo (so is one where
+    /// a single region of it spans half the image).</summary>
     private const double PhotoInk = 0.15;
 
     /// <summary>What was done to a page, for the console.</summary>
@@ -34,7 +35,7 @@ internal static class PhotoPage
 
         var global = classifier.Foreground(image);
         double globalInk = Share(global.Values, global.Threshold);
-        if (!(photo ?? globalInk > PhotoInk))
+        if (!(photo ?? (globalInk > PhotoInk || SpansHalf(global))))
             return (global, new Report(false, globalInk, globalInk, 0, 0));
 
         int w = image.Width, h = image.Height;
@@ -44,6 +45,12 @@ internal static class PhotoPage
         int surroundings = RemoveSurroundings(page, ink, edges: crop is null);
         return (page, new Report(true, globalInk, Share(ink, 0.05f), ruled, surroundings));
     }
+
+    // Whether one region of a foreground spans half the image's width or height: writing never does, the dark desk,
+    // cover or page edge around a photographed page does (even when they are less than PhotoInk of the pixels).
+    private static bool SpansHalf(ForegroundImage foreground) =>
+        ConnectedComponents.Find(foreground, Connectivity.Eight).Regions
+            .Any(r => r.Box.Width > foreground.Width / 2 || r.Box.Height > foreground.Height / 2);
 
     /// <summary>Parses a crop given as x,y,width,height.</summary>
     public static PixelBox ParseCrop(string text)
