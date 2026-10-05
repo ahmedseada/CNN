@@ -246,15 +246,29 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
 {
     if (!File.Exists(modelPath))
         throw new FileNotFoundException($"No model at '{modelPath}'. Run 'dotnet run -- train' first.");
+    var clock = Stopwatch.StartNew();
+    var times = new List<(string Stage, double Ms)>();
+    void Lap(string stage) { times.Add((stage, clock.Elapsed.TotalMilliseconds)); clock.Restart(); }
+
     using var classifier = RegionClassifier.Load(modelPath).Build();
     var byText = Characters.FromStored(classifier.Classes).ToDictionary(c => c.Text);
-
-    var (page, prepared) = PhotoPage.Foreground(ImageCodecs.Decode(ImageConversion.Readable(path)), classifier, crop, photo);
+    Lap("load the model");
+    var image = ImageCodecs.Decode(ImageConversion.Readable(path));
+    Lap("open the image");
+    var (page, prepared) = PhotoPage.Foreground(image, classifier, crop, photo);
+    Lap(prepared.Photo ? "ink (photo)" : "ink");
     if (report && prepared.Photo)
         Console.WriteLine($"Read as a photo: one threshold took {prepared.GlobalInk:P0} of the pixels as ink; a local threshold " +
             $"took {prepared.Ink:P1}, after removing {prepared.RuledPixels:N0} ruled-line pixels and {prepared.SurroundingRegions} regions around the page");
     var glyphs = new TextLineProposer().Find(page);
+    Lap("lines and characters");
     var found = classifier.Classify(page, [.. glyphs.Select(g => g.Box)]);
+    Lap("classify (first run)");
+    if (report && glyphs.Count > 0)
+    {
+        classifier.Classify(page, [.. glyphs.Select(g => g.Box)]);           // again, warm: the speed of every later page
+        Lap("classify (warm)");
+    }
     var answers = Enumerable.Range(0, found.Count).Select(i => found.Top(i, found.Classes.Count)).ToArray();
     if (report)
         Console.WriteLine($"Found {glyphs.Count} characters on {glyphs.Select(g => g.Line).Distinct().Count()} lines");
@@ -309,16 +323,36 @@ List<(Script Script, string Text)> ReadPage(string path, string modelPath, bool 
         if (show)
             foreach (int i in indices.OrderBy(i => found.Confidence(i)).Take(1))
             {
-                var image = new float[Datasets.Size * Datasets.Size];
-                ContentFrame.Extract(page, glyphs[i].Box, image, Datasets.Size);   // the character as the model saw it
-                ConsoleReport.PrintImage(image, Datasets.Size, Datasets.Size);
+                var frame = new float[Datasets.Size * Datasets.Size];
+                ContentFrame.Extract(page, glyphs[i].Box, frame, Datasets.Size);   // the character as the model saw it
+                ConsoleReport.PrintImage(frame, Datasets.Size, Datasets.Size);
                 Console.WriteLine($"least certain on line {glyphs[i].Line + 1}: {answers[i][0].Class} ({answers[i][0].Score:P0}), " +
                     $"else {string.Join(", ", answers[i].Skip(1).Take(2).Select(s => $"{s.Class} {s.Score:P0}"))}");
             }
     }
 
     File.WriteAllLines(Path.ChangeExtension(path, ".txt"), lines.Select(l => l.Item2), Encoding.UTF8);
+    if (report)
+    {
+        Lap(show ? "words, order (and printing)" : "words and reading order");
+        PrintTimes(times, glyphs.Count, image.Width, image.Height, classifier);
+    }
     return lines;
+}
+
+// Where the time went, the characters per second of the model (warm), and the process's peak memory.
+static void PrintTimes(List<(string Stage, double Ms)> times, int characters, int width, int height, RegionClassifier classifier)
+{
+    Console.WriteLine();
+    Console.WriteLine($"Time ({width} x {height} image, {characters} characters, on {Device.Default}):");
+    foreach (var (stage, ms) in times)
+        Console.WriteLine($"  {stage,-26} {ms,9:F1} ms");
+    double page = times.Where(t => t.Stage != "load the model" && t.Stage != "classify (warm)").Sum(t => t.Ms);
+    Console.WriteLine($"  {"page, model loaded",-26} {page,9:F1} ms (all but loading the model and the warm repeat)");
+    if (times.FirstOrDefault(t => t.Stage == "classify (warm)") is { Ms: > 0 } warm && characters > 0)
+        Console.WriteLine($"  model, warm: {characters / (warm.Ms / 1000):N0} characters/s ({warm.Ms * 1000 / characters:F0} µs each)");
+    using var process = Process.GetCurrentProcess();
+    Console.WriteLine($"  memory: {process.PeakWorkingSet64 / (1024.0 * 1024):N0} MB peak working set, {GC.GetTotalMemory(false) / (1024.0 * 1024):N0} MB managed now");
 }
 
 // Latin is compared without case (EMNIST Balanced shares one class between c and C...), with single spaces.
